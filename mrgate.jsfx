@@ -1,0 +1,33 @@
+desc:Mr. Gate
+tags:dynamics gate expander
+//tags:dynamics gate expander
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+slider1:0<0,2,1{Gate,Downward,Upward}>Mode
+slider2:0<0,0,1{General}>Style
+slider3:-40<-80,0,0.1>Threshold (dB)
+slider4:10<1,30,0.1>Ratio
+slider5:40<0,60,0.1>Range (dB)
+slider6:3<0,24,0.1>Knee (dB)
+slider7:1<0.05,100,0.05>Attack (ms)
+slider8:100<5,5000,1>Release (ms)
+slider9:10<0,250,1>Hold (ms)
+slider10:0<0,10,0.1>Lookahead (ms)
+
+@init
+// Memory layout: (reserved for future phases)
+//   0..1023   : lookahead delay buffer (left)
+//   1024..2047: lookahead delay buffer (right)
+//   2048..4095: level history ring buffer (input)
+//   4096..6143: level history ring buffer (output)
+//   6144..6175: transfer curve cached points
+
+@slider
+
+@sample
+spl0 = spl0;
+spl1 = spl1;

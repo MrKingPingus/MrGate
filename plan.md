@@ -6,9 +6,9 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** working scaffold that loads in Reaper.
 
-- [ ] Create `mrgate.jsfx` with `desc:`, `tags:`, basic stereo I/O.
-- [ ] Add placeholder sliders for the eight dynamics controls plus mode and style sliders.
-- [ ] Empty `@init`, `@slider`, `@sample` (passthrough).
+- [x] Create `mrgate.jsfx` with `desc:`, `tags:`, basic stereo I/O.
+- [x] Add placeholder sliders for the eight dynamics controls plus mode and style sliders.
+- [x] Empty `@init`, `@slider`, `@sample` (passthrough).
 - [ ] Verify plugin loads in Reaper and audio passes through unchanged.
 
 **Done when:** plugin loads in Reaper, all sliders visible (default UI is fine), audio passes through without artifacts.
