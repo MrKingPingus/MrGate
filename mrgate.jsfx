@@ -34,11 +34,17 @@ MODE_UP   = 2;
 
 TINY = 0.00000000001;
 
-env_det      = 0;
-gain_smooth  = 1.0;
-hold_counter = 0;
-direction    = 1;
-last_mode    = slider1;  // avoids resetting params on preset load
+LA_BUF_L    = 0;
+LA_BUF_R    = 1024;
+LA_BUF_SIZE = 1024;
+
+env_det           = 0;
+gain_smooth       = 1.0;
+hold_counter      = 0;
+direction         = 1;
+la_write_pos      = 0;
+lookahead_samples = 0;
+last_mode         = slider1;  // avoids resetting params on preset load
 
 @slider
 mode_id = slider1;
@@ -82,8 +88,17 @@ rel_coeff    = 1 - exp(-log(10) / max(release_ms * srate / 1000, 1));
 rms_coeff    = 1 - exp(-1 / (0.005 * srate));
 hold_samples = floor(hold_ms * srate / 1000);
 
+lookahead_samples = min(floor(slider10 * srate / 1000), LA_BUF_SIZE - 1);
+pdc_delay   = lookahead_samples;
+pdc_bot_ch  = 0;
+pdc_top_ch  = 2;
+
 @sample
-// --- Peak detection (stereo linked) ---
+// Write current (undelayed) input into lookahead buffer
+LA_BUF_L[la_write_pos] = spl0;
+LA_BUF_R[la_write_pos] = spl1;
+
+// --- Peak detection (stereo linked) on undelayed signal ---
 det = max(abs(spl0), abs(spl1));
 
 // Light pre-smoothing (~5ms) to prevent chatter
@@ -136,6 +151,9 @@ target_gain > gain_smooth ? (
   gain_smooth += rel_coeff * (target_gain - gain_smooth)
 );
 
-// --- Apply gain ---
-spl0 *= gain_smooth;
-spl1 *= gain_smooth;
+// --- Read delayed audio and apply gain ---
+read_pos = (la_write_pos - lookahead_samples + LA_BUF_SIZE) % LA_BUF_SIZE;
+spl0 = LA_BUF_L[read_pos] * gain_smooth;
+spl1 = LA_BUF_R[read_pos] * gain_smooth;
+
+la_write_pos = (la_write_pos + 1) % LA_BUF_SIZE;

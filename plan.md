@@ -49,10 +49,10 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** zero-to-10ms lookahead with correct latency reporting.
 
-- [ ] Add a delay buffer for the audio path.
-- [ ] Detector reads the present sample; audio output reads from the delayed buffer.
-- [ ] Report latency to Reaper via `pdc_delay`.
-- [ ] Handle the case where lookahead = 0 (no latency reported).
+- [x] Add a delay buffer for the audio path.
+- [x] Detector reads the present sample; audio output reads from the delayed buffer.
+- [x] Report latency to Reaper via `pdc_delay`.
+- [x] Handle the case where lookahead = 0 (no latency reported).
 - [ ] Test PDC by inserting on a track alongside other plugins and confirming alignment.
 
 **Done when:** lookahead non-zero, transients are gated cleanly without "clipped" attack. PDC works correctly.
