@@ -1,6 +1,5 @@
 desc:Mr. Gate
 tags:dynamics gate expander
-//tags:dynamics gate expander
 
 in_pin:left input
 in_pin:right input
@@ -19,15 +18,92 @@ slider9:10<0,250,1>Hold (ms)
 slider10:0<0,10,0.1>Lookahead (ms)
 
 @init
-// Memory layout: (reserved for future phases)
-//   0..1023   : lookahead delay buffer (left)
-//   1024..2047: lookahead delay buffer (right)
-//   2048..4095: level history ring buffer (input)
-//   4096..6143: level history ring buffer (output)
-//   6144..6175: transfer curve cached points
+// Memory layout:
+//   0..1023   : lookahead delay buffer (left)   [Phase 3]
+//   1024..2047: lookahead delay buffer (right)  [Phase 3]
+//   2048..4095: level history ring buffer (input)   [Phase 6]
+//   4096..6143: level history ring buffer (output)  [Phase 6]
+//   6144..6175: transfer curve cached points [Phase 5]
+
+LOG2DB = 20 / log(10);
+DB2LOG = log(10) / 20;
+
+MODE_GATE = 0;
+MODE_DOWN = 1;
+MODE_UP   = 2;
+
+env_det      = 0;
+gain_smooth  = 1.0;
+hold_counter = 0;
 
 @slider
+threshold_db = slider3;
+ratio        = slider4;
+range_db     = slider5;
+knee_db      = slider6;
+attack_ms    = slider7;
+release_ms   = slider8;
+hold_ms      = slider9;
+
+// Time-to-90%-target one-pole coefficients
+atk_coeff  = 1 - exp(-log(10) / max(attack_ms  * srate / 1000, 1));
+rel_coeff  = 1 - exp(-log(10) / max(release_ms * srate / 1000, 1));
+
+// Fixed ~5ms pre-smoother on the level detector (prevents sample-level chatter)
+rms_coeff = 1 - exp(-1 / (0.005 * srate));
+
+hold_samples = floor(hold_ms * srate / 1000);
 
 @sample
-spl0 = spl0;
-spl1 = spl1;
+// --- Peak detection (stereo linked) ---
+det = max(abs(spl0), abs(spl1));
+
+// Light pre-smoothing to prevent chatter
+env_det += rms_coeff * (det - env_det);
+
+// Convert to dB
+env_db = env_det > 1e-10 ? LOG2DB * log(env_det) : -200;
+
+// --- Hold counter ---
+// Resets while signal is above threshold; counts down below it
+env_db >= threshold_db ? (
+  hold_counter = hold_samples
+) : (
+  hold_counter > 0 ? (hold_counter -= 1)
+);
+
+// --- Gain curve (downward expansion) ---
+excess = env_db - threshold_db;  // negative when below threshold
+
+excess >= knee_db * 0.5 ? (
+  // Above knee: no gain change
+  target_gain_db = 0
+) : knee_db > 0 && excess > -(knee_db * 0.5) ? (
+  // Soft knee region: quadratic interpolation
+  // Formula is C1-continuous at both knee boundaries
+  tmp = excess - knee_db * 0.5;
+  target_gain_db = -(ratio - 1) * tmp * tmp / (2 * knee_db);
+  target_gain_db = max(target_gain_db, -range_db)
+) : (
+  // Below knee: full expansion
+  target_gain_db = (ratio - 1) * excess;
+  target_gain_db = max(target_gain_db, -range_db)
+);
+
+target_gain = exp(target_gain_db * DB2LOG);
+
+// Hold: freeze gain during hold period (prevents release from starting)
+hold_counter > 0 && target_gain < gain_smooth ? (
+  target_gain = gain_smooth
+);
+
+// --- Asymmetric attack/release smoothing ---
+target_gain > gain_smooth ? (
+  gain_smooth += atk_coeff * (target_gain - gain_smooth)
+) : (
+  gain_smooth += rel_coeff * (target_gain - gain_smooth)
+);
+
+// --- Apply gain ---
+spl0 *= gain_smooth;
+spl1 *= gain_smooth;

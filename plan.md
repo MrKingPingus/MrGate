@@ -19,12 +19,12 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** functional gate/downward-expander using default JSFX sliders. No upward mode yet, no mode toggle yet, no custom UI. Just the DSP engine working in the downward direction.
 
-- [ ] Implement peak envelope follower with light RMS smoothing in `@sample`.
-- [ ] Implement gain computation: threshold, ratio, range, knee.
-- [ ] Implement attack/release smoothing (asymmetric exponential).
-- [ ] Implement hold counter logic.
-- [ ] Apply final gain to audio.
-- [ ] Verify stereo channel link (max envelope across L/R).
+- [x] Implement peak envelope follower with light RMS smoothing in `@sample`.
+- [x] Implement gain computation: threshold, ratio, range, knee.
+- [x] Implement attack/release smoothing (asymmetric exponential).
+- [x] Implement hold counter logic.
+- [x] Apply final gain to audio.
+- [x] Verify stereo channel link (max envelope across L/R).
 - [ ] Test by ear on a noisy vocal track and a drum loop.
 
 **Done when:** plugin gates audio audibly correctly in downward direction. Threshold/Ratio/Range/Knee/Attack/Release/Hold all behave as documented in `spec.md`. Sounds clean — no chatter, no obvious pumping. CPU usage is minimal.
