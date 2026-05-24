@@ -59,21 +59,57 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 ---
 
-## Phase 4 — Custom UI Shell
+## Phase 4a — Layout Skeleton + Static Knob Drawing
 
-**Goal:** replace default sliders with custom `@gfx` UI. No fancy displays yet — just laid-out custom knobs, mode buttons, and a style dropdown.
+**Goal:** `@gfx` renders the complete layout as static art — no mouse interaction yet. All pixel constants, colors, angles, and positions are pre-decided in `layout.md`. Translate spec to code; make no design decisions.
 
-- [ ] Design layout proportions based on `gfx_w` / `gfx_h`.
-- [ ] Implement a reusable `ui_draw_knob` function.
-- [ ] Implement a reusable `ui_hit_test_knob` function for mouse interaction.
-- [ ] Implement mouse drag to adjust knob values (shift = fine, ctrl = reset, scroll = nudge, double-click = reset).
-- [ ] Implement the three-button mode toggle row at the top.
-- [ ] Implement the Style dropdown (single item for now).
-- [ ] Lay out all eight dynamics knobs in their target positions.
-- [ ] Add labels and value readouts.
-- [ ] Implement the display toggle button.
+- [ ] Add `gfx_w = 700; gfx_h = 420;` to `@init`. Define all `layout.md` constants: `KNOB_R`, `ANG_MIN`, `ANG_SWEEP`, `KNOB_L_X`, `KNOB_R_X`, 4 Y positions, slider min/max tables, and defaults table at address 6200.
+- [ ] Set fonts 1–3 in `@init` via `gfx_setfont` (per `layout.md`).
+- [ ] Implement `function ui_draw_knob(cx, cy, r, t)` — body circle, track arc, fill arc, indicator dot.
+- [ ] Draw top bar (background, all three mode buttons, style dropdown). Active mode button (per `slider1`) uses COL_BTN_ACTIVE; others use COL_BTN_INACTIVE.
+- [ ] Draw display placeholder rect (center area, `layout.md` dimensions).
+- [ ] Draw all 8 knobs using each slider's current value normalized per `layout.md` normalization table.
+- [ ] Draw knob labels (hard-coded strings, centered `KNOB_R + 5` below each knob center).
+- [ ] Draw bottom bar (display toggle button, GR placeholder).
 
-**Done when:** plugin is fully usable from custom UI. No regressions in DSP. Mouse interaction feels responsive. Mode toggle works visually and reloads defaults correctly.
+**Done when:** plugin renders the full layout in Reaper. Active mode button highlighted. All labels visible. No interaction. No DSP regressions.
+
+---
+
+## Phase 4b — Mouse Interaction
+
+**Goal:** all knobs respond to mouse drag, scroll, ctrl+click, and double-click. Reference `layout.md` for all sensitivity values and state-variable names.
+
+- [ ] Add to `@init`: `ui_drag_knob = -1`, `ui_drag_start_y`, `ui_drag_start_v`, `ui_prev_lmb`, `ui_last_click_t`, `ui_disp_enabled = 1`. Add `SLIDER_MIN_TABLE` and `SLIDER_MAX_TABLE` arrays (8 entries each) and `DEFAULT_TABLE` (24 entries) per `layout.md`.
+- [ ] Knob hit test: circular check, 1.5× visual radius hit target.
+- [ ] Drag-to-adjust: 200 px = full range. Shift held = 10× slower. Write result to correct slider, call `sliderchange()`.
+- [ ] Ctrl+click or double-click (< 0.4 s between clicks): reset to `DEFAULT_TABLE[mode_id * 8 + knob_index]`, call `sliderchange()`.
+- [ ] Scroll-wheel nudge: ±0.5% of range per tick.
+
+**Done when:** all 8 knobs adjustable. Audible in real time. Shift slows, ctrl resets, scroll nudges. No DSP regressions.
+
+---
+
+## Phase 4c — Mode Buttons + Style Dropdown Interaction
+
+**Goal:** clicking the mode row and style dropdown updates plugin state.
+
+- [ ] On LMB click on a mode button: write `slider1 = mode_index`, call `sliderchange()`. Existing `@slider` logic fires the defaults reload.
+- [ ] On LMB click on style dropdown: no-op (single option).
+
+**Done when:** clicking a mode button switches mode, reloads defaults, and the correct button highlights. No DSP regressions.
+
+---
+
+## Phase 4d — Value Readouts + Display Toggle
+
+**Goal:** numeric value labels under each knob, and the display toggle button works.
+
+- [ ] Draw formatted value string `KNOB_R + 19` below each knob center. Format strings per `layout.md` value-readout table.
+- [ ] On LMB click on display toggle button: `ui_disp_enabled = 1 - ui_disp_enabled`. Update button visual (COL_BTN_ACTIVE when on, COL_BTN_INACTIVE when off).
+- [ ] When `ui_disp_enabled = 0`: skip drawing the center placeholder rect.
+
+**Done when:** all knobs show current value. Display toggle button updates visually on click. No DSP regressions.
 
 ---
 
