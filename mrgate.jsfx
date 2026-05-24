@@ -32,13 +32,43 @@ MODE_GATE = 0;
 MODE_DOWN = 1;
 MODE_UP   = 2;
 
-TINY = 0.00000000001;  // floor for log() input, avoids log(0)
+TINY = 0.00000000001;
 
 env_det      = 0;
 gain_smooth  = 1.0;
 hold_counter = 0;
+direction    = 1;
+last_mode    = slider1;  // avoids resetting params on preset load
 
 @slider
+mode_id = slider1;
+
+// When mode changes, reload defaults from spec.md defaults table
+mode_id != last_mode ? (
+  last_mode = mode_id;
+  mode_id == MODE_GATE ? (
+    slider3 = -40; slider4 = 10; slider5 = 40;
+    slider6 = 3;   slider7 = 1;  slider8 = 100;
+    slider9 = 10;  slider10 = 0;
+  ) : mode_id == MODE_DOWN ? (
+    slider3 = -50; slider4 = 2;  slider5 = 12;
+    slider6 = 9;   slider7 = 10; slider8 = 250;
+    slider9 = 0;   slider10 = 0;
+  ) : (
+    slider3 = -20; slider4 = 2;  slider5 = 6;
+    slider6 = 6;   slider7 = 5;  slider8 = 200;
+    slider9 = 0;   slider10 = 0;
+  );
+  slider_automate(slider3);  slider_automate(slider4);
+  slider_automate(slider5);  slider_automate(slider6);
+  slider_automate(slider7);  slider_automate(slider8);
+  slider_automate(slider9);  slider_automate(slider10);
+);
+
+// +1 = downward (Gate/Down): process below threshold
+// -1 = upward: process above threshold
+direction = mode_id == MODE_UP ? -1 : 1;
+
 threshold_db = slider3;
 ratio        = slider4;
 range_db     = slider5;
@@ -47,54 +77,54 @@ attack_ms    = slider7;
 release_ms   = slider8;
 hold_ms      = slider9;
 
-// Time-to-90%-target one-pole coefficients
-atk_coeff  = 1 - exp(-log(10) / max(attack_ms  * srate / 1000, 1));
-rel_coeff  = 1 - exp(-log(10) / max(release_ms * srate / 1000, 1));
-
-// Fixed ~5ms pre-smoother on the level detector (prevents sample-level chatter)
-rms_coeff = 1 - exp(-1 / (0.005 * srate));
-
+atk_coeff    = 1 - exp(-log(10) / max(attack_ms  * srate / 1000, 1));
+rel_coeff    = 1 - exp(-log(10) / max(release_ms * srate / 1000, 1));
+rms_coeff    = 1 - exp(-1 / (0.005 * srate));
 hold_samples = floor(hold_ms * srate / 1000);
 
 @sample
 // --- Peak detection (stereo linked) ---
 det = max(abs(spl0), abs(spl1));
 
-// Light pre-smoothing to prevent chatter
+// Light pre-smoothing (~5ms) to prevent chatter
 env_det += rms_coeff * (det - env_det);
 
 // Convert to dB
 env_db = env_det > TINY ? LOG2DB * log(env_det) : -200;
 
 // --- Hold counter ---
-// Resets while signal is above threshold; counts down below it
 env_db >= threshold_db ? (
   hold_counter = hold_samples
 ) : (
   hold_counter > 0 ? (hold_counter -= 1)
 );
 
-// --- Gain curve (downward expansion) ---
-excess = env_db - threshold_db;  // negative when below threshold
+// --- Unified gain curve ---
+// active > 0: signal is on the processing side of the threshold
+// active < 0: signal is on the inactive side (no processing)
+// Downward (direction=+1): active = -(env_db - threshold_db), positive below threshold
+// Upward   (direction=-1): active =  (env_db - threshold_db), positive above threshold
+active = -direction * (env_db - threshold_db);
 
-excess >= knee_db * 0.5 ? (
-  // Above knee: no gain change
+active < -(knee_db * 0.5) ? (
+  // Inactive side, outside knee: no gain change
   target_gain_db = 0
-) : knee_db > 0 && excess > -(knee_db * 0.5) ? (
-  // Soft knee region: quadratic interpolation
-  // Formula is C1-continuous at both knee boundaries
-  tmp = excess - knee_db * 0.5;
-  target_gain_db = -(ratio - 1) * tmp * tmp / (2 * knee_db);
-  target_gain_db = max(target_gain_db, -range_db)
+) : knee_db > 0 && active < knee_db * 0.5 ? (
+  // Soft knee: quadratic interpolation, C1-continuous at both boundaries
+  tmp = active + knee_db * 0.5;
+  abs_gain = (ratio - 1) * tmp * tmp / (2 * knee_db);
+  abs_gain = min(abs_gain, range_db);
+  target_gain_db = -direction * abs_gain
 ) : (
-  // Below knee: full expansion
-  target_gain_db = (ratio - 1) * excess;
-  target_gain_db = max(target_gain_db, -range_db)
+  // Active side, beyond knee: full expansion or boost
+  abs_gain = (ratio - 1) * active;
+  abs_gain = min(abs_gain, range_db);
+  target_gain_db = -direction * abs_gain
 );
 
 target_gain = exp(target_gain_db * DB2LOG);
 
-// Hold: freeze gain during hold period (prevents release from starting)
+// Hold: freeze gain during hold period
 hold_counter > 0 && target_gain < gain_smooth ? (
   target_gain = gain_smooth
 );

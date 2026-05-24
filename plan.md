@@ -35,9 +35,9 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** add the three-way mode toggle and the upward expansion path.
 
-- [ ] Add mode slider (0 = Gate, 1 = Downward, 2 = Upward).
-- [ ] Refactor gain computation to use a `direction` sign (+1 for downward, -1 for upward) — single code path.
-- [ ] Implement mode-dependent default loading (when mode changes, reload defaults per the table in `spec.md`).
+- [x] Add mode slider (0 = Gate, 1 = Downward, 2 = Upward).
+- [x] Refactor gain computation to use a `direction` sign (+1 for downward, -1 for upward) — single code path.
+- [x] Implement mode-dependent default loading (when mode changes, reload defaults per the table in `spec.md`).
 - [ ] Verify all three modes audibly do the right thing — Gate kills, Downward gently reduces, Upward boosts loud parts.
 - [ ] Confirm no DSP regressions in Gate or Downward modes after refactor.
 
