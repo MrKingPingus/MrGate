@@ -19,11 +19,14 @@ slider10:0<0,10,0.1>Lookahead (ms)
 
 @init
 // Memory layout:
-//   0..1023   : lookahead delay buffer (left)   [Phase 3]
-//   1024..2047: lookahead delay buffer (right)  [Phase 3]
-//   2048..4095: level history ring buffer (input)   [Phase 6]
-//   4096..6143: level history ring buffer (output)  [Phase 6]
-//   6144..6175: transfer curve cached points [Phase 5]
+//   0..1023   : lookahead delay buffer (left)         [Phase 3]
+//   1024..2047: lookahead delay buffer (right)        [Phase 3]
+//   2048..4095: level history ring buffer (input)     [Phase 6]
+//   4096..6143: level history ring buffer (output)    [Phase 6]
+//   6144..6175: transfer curve cached points          [Phase 5]
+//   6200..6223: mode defaults table (3 modes × 8 params) [Phase 4]
+//   6230..6237: slider min table (8 entries)          [Phase 4]
+//   6240..6247: slider max table (8 entries)          [Phase 4]
 
 LOG2DB = 20 / log(10);
 DB2LOG = log(10) / 20;
@@ -45,6 +48,81 @@ direction         = 1;
 la_write_pos      = 0;
 lookahead_samples = 0;
 last_mode         = slider1;  // avoids resetting params on preset load
+
+// --- UI layout constants (Phase 4a) ---
+gfx_w = 700;
+gfx_h = 420;
+
+KNOB_R    = 22;
+ANG_MIN   = 2 * $pi / 3;
+ANG_SWEEP = 5 * $pi / 3;
+KNOB_L_X  = 65;
+KNOB_R_X  = 635;
+KNOB_Y0   = 87;
+KNOB_Y1   = 165;
+KNOB_Y2   = 243;
+KNOB_Y3   = 321;
+
+DEFAULT_TABLE    = 6200;
+SLIDER_MIN_TABLE = 6230;
+SLIDER_MAX_TABLE = 6240;
+
+DEFAULT_TABLE[0]=-40;  DEFAULT_TABLE[1]=10;  DEFAULT_TABLE[2]=40;
+DEFAULT_TABLE[3]=3;    DEFAULT_TABLE[4]=1;   DEFAULT_TABLE[5]=100;
+DEFAULT_TABLE[6]=10;   DEFAULT_TABLE[7]=0;
+DEFAULT_TABLE[8]=-50;  DEFAULT_TABLE[9]=2;   DEFAULT_TABLE[10]=12;
+DEFAULT_TABLE[11]=9;   DEFAULT_TABLE[12]=10; DEFAULT_TABLE[13]=250;
+DEFAULT_TABLE[14]=0;   DEFAULT_TABLE[15]=0;
+DEFAULT_TABLE[16]=-20; DEFAULT_TABLE[17]=2;  DEFAULT_TABLE[18]=6;
+DEFAULT_TABLE[19]=6;   DEFAULT_TABLE[20]=5;  DEFAULT_TABLE[21]=200;
+DEFAULT_TABLE[22]=0;   DEFAULT_TABLE[23]=0;
+
+SLIDER_MIN_TABLE[0]=-80;  SLIDER_MAX_TABLE[0]=0;
+SLIDER_MIN_TABLE[1]=1;    SLIDER_MAX_TABLE[1]=30;
+SLIDER_MIN_TABLE[2]=0;    SLIDER_MAX_TABLE[2]=60;
+SLIDER_MIN_TABLE[3]=0;    SLIDER_MAX_TABLE[3]=24;
+SLIDER_MIN_TABLE[4]=0.05; SLIDER_MAX_TABLE[4]=100;
+SLIDER_MIN_TABLE[5]=5;    SLIDER_MAX_TABLE[5]=5000;
+SLIDER_MIN_TABLE[6]=0;    SLIDER_MAX_TABLE[6]=250;
+SLIDER_MIN_TABLE[7]=0;    SLIDER_MAX_TABLE[7]=10;
+
+ui_disp_enabled = 1;
+
+function ui_draw_knob(cx, cy, r, t)
+local(scx, scy, sr, ang, ix, iy)
+global(ui_sx, ui_sy, ANG_MIN, ANG_SWEEP)
+(
+  scx = cx * ui_sx;
+  scy = cy * ui_sy;
+  sr  = r * min(ui_sx, ui_sy);
+  ang = ANG_MIN + t * ANG_SWEEP;
+
+  // Body: filled circle + outline
+  gfx_r = 0.200; gfx_g = 0.200; gfx_b = 0.220; gfx_a = 1;
+  gfx_circle(scx, scy, sr, 1, 1);
+  gfx_r = 0.282; gfx_g = 0.282; gfx_b = 0.314;
+  gfx_circle(scx, scy, sr, 0, 1);
+
+  // Full track arc (~3px: drawn at 3 consecutive radii)
+  gfx_r = 0.228; gfx_g = 0.228; gfx_b = 0.259;
+  gfx_arc(scx, scy, sr+4, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
+  gfx_arc(scx, scy, sr+5, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
+  gfx_arc(scx, scy, sr+6, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
+
+  // Active fill arc
+  t > 0 ? (
+    gfx_r = 0.228; gfx_g = 0.565; gfx_b = 0.878;
+    gfx_arc(scx, scy, sr+4, ANG_MIN, ang, 1);
+    gfx_arc(scx, scy, sr+5, ANG_MIN, ang, 1);
+    gfx_arc(scx, scy, sr+6, ANG_MIN, ang, 1);
+  );
+
+  // Indicator dot on knob face
+  ix = scx + (sr - 5) * cos(ang);
+  iy = scy + (sr - 5) * sin(ang);
+  gfx_r = 0.722; gfx_g = 0.847; gfx_b = 0.973;
+  gfx_circle(ix, iy, max(2, 3 * min(ui_sx, ui_sy)), 1, 1);
+);
 
 @slider
 mode_id = slider1;
@@ -157,3 +235,163 @@ spl0 = LA_BUF_L[read_pos] * gain_smooth;
 spl1 = LA_BUF_R[read_pos] * gain_smooth;
 
 la_write_pos = (la_write_pos + 1) % LA_BUF_SIZE;
+
+@gfx
+// Define fonts each frame (safe to call repeatedly in @gfx)
+gfx_setfont(1, "Arial", 11);
+gfx_setfont(2, "Arial", 10);
+
+// Scale factors
+ui_sx = gfx_w / 700;
+ui_sy = gfx_h / 420;
+
+// Normalize slider values to 0..1 for knob drawing
+t_thresh = (slider3 + 80) / 80;
+t_ratio  = (slider4 - 1) / 29;
+t_range  = slider5 / 60;
+t_knee   = slider6 / 24;
+t_atk    = (slider7 - 0.05) / 99.95;
+t_rel    = (slider8 - 5) / 4995;
+t_hold   = slider9 / 250;
+t_la     = slider10 / 10;
+
+// --- Background ---
+gfx_r = 0.102; gfx_g = 0.102; gfx_b = 0.118; gfx_a = 1;
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+// --- Top bar background ---
+gfx_r = 0.133; gfx_g = 0.133; gfx_b = 0.149;
+gfx_rect(0, 0, gfx_w, 40*ui_sy);
+
+// Mode button: Gate
+bx = 10*ui_sx; by = 8*ui_sy; bw = 62*ui_sx; bh = 24*ui_sy;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+slider1 == 0 ? (gfx_r=0.165; gfx_g=0.424; gfx_b=0.722) : (gfx_r=0.157; gfx_g=0.157; gfx_b=0.180);
+gfx_rect(bx, by, bw, bh);
+gfx_setfont(1);
+slider1 == 0 ? (gfx_r=0.847; gfx_g=0.847; gfx_b=0.863) : (gfx_r=0.533; gfx_g=0.533; gfx_b=0.565);
+gfx_measurestr("Gate", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("Gate");
+
+// Mode button: Downward
+bx = 78*ui_sx; bw = 86*ui_sx;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+slider1 == 1 ? (gfx_r=0.165; gfx_g=0.424; gfx_b=0.722) : (gfx_r=0.157; gfx_g=0.157; gfx_b=0.180);
+gfx_rect(bx, by, bw, bh);
+slider1 == 1 ? (gfx_r=0.847; gfx_g=0.847; gfx_b=0.863) : (gfx_r=0.533; gfx_g=0.533; gfx_b=0.565);
+gfx_measurestr("Downward", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("Downward");
+
+// Mode button: Upward
+bx = 170*ui_sx; bw = 72*ui_sx;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+slider1 == 2 ? (gfx_r=0.165; gfx_g=0.424; gfx_b=0.722) : (gfx_r=0.157; gfx_g=0.157; gfx_b=0.180);
+gfx_rect(bx, by, bw, bh);
+slider1 == 2 ? (gfx_r=0.847; gfx_g=0.847; gfx_b=0.863) : (gfx_r=0.533; gfx_g=0.533; gfx_b=0.565);
+gfx_measurestr("Upward", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("Upward");
+
+// Style label
+gfx_r = 0.533; gfx_g = 0.533; gfx_b = 0.565;
+gfx_x = 450*ui_sx; gfx_y = 15*ui_sy;
+gfx_drawstr("Style:");
+
+// Style dropdown box
+bx = 490*ui_sx; by = 8*ui_sy; bw = 200*ui_sx; bh = 24*ui_sy;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+gfx_r = 0.157; gfx_g = 0.157; gfx_b = 0.180;
+gfx_rect(bx, by, bw, bh);
+gfx_r = 0.847; gfx_g = 0.847; gfx_b = 0.863;
+gfx_measurestr("General", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("General");
+
+// --- Center display placeholder ---
+ui_disp_enabled ? (
+  gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+  gfx_rect(129*ui_sx, 47*ui_sy, 442*ui_sx, 314*ui_sy);
+  gfx_r = 0.055; gfx_g = 0.055; gfx_b = 0.071;
+  gfx_rect(130*ui_sx, 48*ui_sy, 440*ui_sx, 312*ui_sy);
+);
+
+// --- Left column knobs ---
+gfx_setfont(1);
+gfx_r = 0.533; gfx_g = 0.533; gfx_b = 0.565;
+
+ui_draw_knob(KNOB_L_X, KNOB_Y0, KNOB_R, t_thresh);
+gfx_measurestr("THRESHOLD", str_w, str_h);
+gfx_x = KNOB_L_X*ui_sx - str_w*0.5; gfx_y = (KNOB_Y0+KNOB_R+5)*ui_sy;
+gfx_drawstr("THRESHOLD");
+
+ui_draw_knob(KNOB_L_X, KNOB_Y1, KNOB_R, t_ratio);
+gfx_measurestr("RATIO", str_w, str_h);
+gfx_x = KNOB_L_X*ui_sx - str_w*0.5; gfx_y = (KNOB_Y1+KNOB_R+5)*ui_sy;
+gfx_drawstr("RATIO");
+
+ui_draw_knob(KNOB_L_X, KNOB_Y2, KNOB_R, t_range);
+gfx_measurestr("RANGE", str_w, str_h);
+gfx_x = KNOB_L_X*ui_sx - str_w*0.5; gfx_y = (KNOB_Y2+KNOB_R+5)*ui_sy;
+gfx_drawstr("RANGE");
+
+ui_draw_knob(KNOB_L_X, KNOB_Y3, KNOB_R, t_knee);
+gfx_measurestr("KNEE", str_w, str_h);
+gfx_x = KNOB_L_X*ui_sx - str_w*0.5; gfx_y = (KNOB_Y3+KNOB_R+5)*ui_sy;
+gfx_drawstr("KNEE");
+
+// --- Right column knobs ---
+ui_draw_knob(KNOB_R_X, KNOB_Y0, KNOB_R, t_atk);
+gfx_measurestr("ATTACK", str_w, str_h);
+gfx_x = KNOB_R_X*ui_sx - str_w*0.5; gfx_y = (KNOB_Y0+KNOB_R+5)*ui_sy;
+gfx_drawstr("ATTACK");
+
+ui_draw_knob(KNOB_R_X, KNOB_Y1, KNOB_R, t_rel);
+gfx_measurestr("RELEASE", str_w, str_h);
+gfx_x = KNOB_R_X*ui_sx - str_w*0.5; gfx_y = (KNOB_Y1+KNOB_R+5)*ui_sy;
+gfx_drawstr("RELEASE");
+
+ui_draw_knob(KNOB_R_X, KNOB_Y2, KNOB_R, t_hold);
+gfx_measurestr("HOLD", str_w, str_h);
+gfx_x = KNOB_R_X*ui_sx - str_w*0.5; gfx_y = (KNOB_Y2+KNOB_R+5)*ui_sy;
+gfx_drawstr("HOLD");
+
+ui_draw_knob(KNOB_R_X, KNOB_Y3, KNOB_R, t_la);
+gfx_measurestr("LOOKAHEAD", str_w, str_h);
+gfx_x = KNOB_R_X*ui_sx - str_w*0.5; gfx_y = (KNOB_Y3+KNOB_R+5)*ui_sy;
+gfx_drawstr("LOOKAHEAD");
+
+// --- Bottom bar ---
+// Display toggle button
+bx = 10*ui_sx; by = 370*ui_sy; bw = 120*ui_sx; bh = 30*ui_sy;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+ui_disp_enabled ? (gfx_r=0.165; gfx_g=0.424; gfx_b=0.722) : (gfx_r=0.157; gfx_g=0.157; gfx_b=0.180);
+gfx_rect(bx, by, bw, bh);
+ui_disp_enabled ? (
+  gfx_r=0.847; gfx_g=0.847; gfx_b=0.863;
+  gfx_measurestr("Display ON", str_w, str_h);
+  gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+  gfx_drawstr("Display ON");
+) : (
+  gfx_r=0.533; gfx_g=0.533; gfx_b=0.565;
+  gfx_measurestr("Display OFF", str_w, str_h);
+  gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+  gfx_drawstr("Display OFF");
+);
+
+// GR placeholder
+bx = 545*ui_sx; bw = 145*ui_sx;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+gfx_r = 0.157; gfx_g = 0.157; gfx_b = 0.180;
+gfx_rect(bx, by, bw, bh);
+gfx_r = 0.533; gfx_g = 0.533; gfx_b = 0.565;
+gfx_measurestr("GR: --", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("GR: --");
