@@ -32,6 +32,8 @@ MODE_GATE = 0;
 MODE_DOWN = 1;
 MODE_UP   = 2;
 
+TINY = 0.00000000001;  // floor for log() input, avoids log(0)
+
 env_det      = 0;
 gain_smooth  = 1.0;
 hold_counter = 0;
@@ -62,7 +64,7 @@ det = max(abs(spl0), abs(spl1));
 env_det += rms_coeff * (det - env_det);
 
 // Convert to dB
-env_db = env_det > 1e-10 ? LOG2DB * log(env_det) : -200;
+env_db = env_det > TINY ? LOG2DB * log(env_det) : -200;
 
 // --- Hold counter ---
 // Resets while signal is above threshold; counts down below it
