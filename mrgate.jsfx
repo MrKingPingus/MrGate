@@ -203,7 +203,6 @@ la_write_pos = (la_write_pos + 1) % LA_BUF_SIZE;
 @gfx
 function ui_draw_knob(cx, cy, r, t)
 local(scx, scy, sr, ang, ix, iy)
-global(ui_sx, ui_sy, ANG_MIN, ANG_SWEEP)
 (
   scx = cx * ui_sx;
   scy = cy * ui_sy;
