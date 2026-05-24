@@ -88,42 +88,6 @@ SLIDER_MIN_TABLE[7]=0;    SLIDER_MAX_TABLE[7]=10;
 
 ui_disp_enabled = 1;
 
-function ui_draw_knob(cx, cy, r, t)
-local(scx, scy, sr, ang, ix, iy)
-global(ui_sx, ui_sy, ANG_MIN, ANG_SWEEP)
-(
-  scx = cx * ui_sx;
-  scy = cy * ui_sy;
-  sr  = r * min(ui_sx, ui_sy);
-  ang = ANG_MIN + t * ANG_SWEEP;
-
-  // Body: filled circle + outline
-  gfx_r = 0.200; gfx_g = 0.200; gfx_b = 0.220; gfx_a = 1;
-  gfx_circle(scx, scy, sr, 1, 1);
-  gfx_r = 0.282; gfx_g = 0.282; gfx_b = 0.314;
-  gfx_circle(scx, scy, sr, 0, 1);
-
-  // Full track arc (~3px: drawn at 3 consecutive radii)
-  gfx_r = 0.228; gfx_g = 0.228; gfx_b = 0.259;
-  gfx_arc(scx, scy, sr+4, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
-  gfx_arc(scx, scy, sr+5, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
-  gfx_arc(scx, scy, sr+6, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
-
-  // Active fill arc
-  t > 0 ? (
-    gfx_r = 0.228; gfx_g = 0.565; gfx_b = 0.878;
-    gfx_arc(scx, scy, sr+4, ANG_MIN, ang, 1);
-    gfx_arc(scx, scy, sr+5, ANG_MIN, ang, 1);
-    gfx_arc(scx, scy, sr+6, ANG_MIN, ang, 1);
-  );
-
-  // Indicator dot on knob face
-  ix = scx + (sr - 5) * cos(ang);
-  iy = scy + (sr - 5) * sin(ang);
-  gfx_r = 0.722; gfx_g = 0.847; gfx_b = 0.973;
-  gfx_circle(ix, iy, max(2, 3 * min(ui_sx, ui_sy)), 1, 1);
-);
-
 @slider
 mode_id = slider1;
 
@@ -237,6 +201,42 @@ spl1 = LA_BUF_R[read_pos] * gain_smooth;
 la_write_pos = (la_write_pos + 1) % LA_BUF_SIZE;
 
 @gfx
+function ui_draw_knob(cx, cy, r, t)
+local(scx, scy, sr, ang, ix, iy)
+global(ui_sx, ui_sy, ANG_MIN, ANG_SWEEP)
+(
+  scx = cx * ui_sx;
+  scy = cy * ui_sy;
+  sr  = r * min(ui_sx, ui_sy);
+  ang = ANG_MIN + t * ANG_SWEEP;
+
+  // Body: filled circle + outline
+  gfx_r = 0.200; gfx_g = 0.200; gfx_b = 0.220; gfx_a = 1;
+  gfx_circle(scx, scy, sr, 1, 1);
+  gfx_r = 0.282; gfx_g = 0.282; gfx_b = 0.314;
+  gfx_circle(scx, scy, sr, 0, 1);
+
+  // Full track arc (~3px: drawn at 3 consecutive radii)
+  gfx_r = 0.228; gfx_g = 0.228; gfx_b = 0.259;
+  gfx_arc(scx, scy, sr+4, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
+  gfx_arc(scx, scy, sr+5, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
+  gfx_arc(scx, scy, sr+6, ANG_MIN, ANG_MIN+ANG_SWEEP, 1);
+
+  // Active fill arc
+  t > 0 ? (
+    gfx_r = 0.228; gfx_g = 0.565; gfx_b = 0.878;
+    gfx_arc(scx, scy, sr+4, ANG_MIN, ang, 1);
+    gfx_arc(scx, scy, sr+5, ANG_MIN, ang, 1);
+    gfx_arc(scx, scy, sr+6, ANG_MIN, ang, 1);
+  );
+
+  // Indicator dot on knob face
+  ix = scx + (sr - 5) * cos(ang);
+  iy = scy + (sr - 5) * sin(ang);
+  gfx_r = 0.722; gfx_g = 0.847; gfx_b = 0.973;
+  gfx_circle(ix, iy, max(2, 3 * min(ui_sx, ui_sy)), 1, 1);
+);
+
 // Define fonts each frame (safe to call repeatedly in @gfx)
 gfx_setfont(1, "Arial", 11);
 gfx_setfont(2, "Arial", 10);
