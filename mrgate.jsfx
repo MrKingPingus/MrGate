@@ -216,17 +216,18 @@ local(scx, scy, sr, ang, ix, iy)
   gfx_circle(scx, scy, sr, 0, 1);
 
   // Full track arc (~3px: drawn at 3 consecutive radii)
+  // gfx_arc uses y-up angles; negate our y-down angles to match
   gfx_r = 0.228; gfx_g = 0.228; gfx_b = 0.259;
-  gfx_arc(scx, scy, sr+4, ANG_MIN+ANG_SWEEP, ANG_MIN, 1);
-  gfx_arc(scx, scy, sr+5, ANG_MIN+ANG_SWEEP, ANG_MIN, 1);
-  gfx_arc(scx, scy, sr+6, ANG_MIN+ANG_SWEEP, ANG_MIN, 1);
+  gfx_arc(scx, scy, sr+4, -(ANG_MIN+ANG_SWEEP), -ANG_MIN, 1);
+  gfx_arc(scx, scy, sr+5, -(ANG_MIN+ANG_SWEEP), -ANG_MIN, 1);
+  gfx_arc(scx, scy, sr+6, -(ANG_MIN+ANG_SWEEP), -ANG_MIN, 1);
 
   // Active fill arc
   t > 0 ? (
     gfx_r = 0.228; gfx_g = 0.565; gfx_b = 0.878;
-    gfx_arc(scx, scy, sr+4, ang, ANG_MIN, 1);
-    gfx_arc(scx, scy, sr+5, ang, ANG_MIN, 1);
-    gfx_arc(scx, scy, sr+6, ang, ANG_MIN, 1);
+    gfx_arc(scx, scy, sr+4, -ang, -ANG_MIN, 1);
+    gfx_arc(scx, scy, sr+5, -ang, -ANG_MIN, 1);
+    gfx_arc(scx, scy, sr+6, -ang, -ANG_MIN, 1);
   );
 
   // Indicator dot on knob face
