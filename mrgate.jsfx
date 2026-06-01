@@ -43,6 +43,8 @@ LA_BUF_SIZE = 1024;
 
 env_det           = 0;
 vis_meansq        = 0;  // UI-only: slow RMS follower for the live input dot
+vis_peak_db       = -200;
+vis_peak_decay    = 10 / srate;  // 10 dB/sec ballistic drop
 gain_smooth       = 1.0;
 hold_counter      = 0;
 direction         = 1;
@@ -165,6 +167,9 @@ vis_meansq += vis_rms_coeff * (det * det - vis_meansq);
 
 // Convert to dB
 env_db = env_det > TINY ? LOG2DB * log(env_det) : -200;
+
+// UI-only peak hold with slow ballistic drop (needs current env_db)
+vis_peak_db = max(env_db, vis_peak_db - vis_peak_decay);
 
 // --- Hold counter ---
 env_db >= threshold_db ? (
@@ -368,6 +373,8 @@ gfx_rect(disp_x-1, disp_y-1, disp_w+2, disp_h+2);
 gfx_r = 0.039; gfx_g = 0.047; gfx_b = 0.063;
 gfx_rect(disp_x, disp_y, disp_w, disp_h);
 
+_vis_rms_db = vis_meansq > TINY ? LOG2DB * 0.5 * log(vis_meansq) : -200;
+
 // Phase 6: Scrolling level history (0 dB at top, -60 dB at bottom)
 ui_disp_enabled ? (
   _disp_w_px = floor(disp_w);
@@ -381,12 +388,41 @@ ui_disp_enabled ? (
     _px = disp_x + _p;
     _in_y  = disp_y + disp_h * (-_in_db  / 60);
     _out_y = disp_y + disp_h * (-_out_db / 60);
-    gfx_r = 0.071; gfx_g = 0.212; gfx_b = 0.392; gfx_a = 1;
-    gfx_rect(_px, _in_y, 1, _bot_y - _in_y);
-    gfx_r = 0.157; gfx_g = 0.471; gfx_b = 0.784;
-    gfx_rect(_px, _out_y, 1, _bot_y - _out_y);
+    // Base: lower of input/output filled dark blue
+    gfx_r=0.071; gfx_g=0.212; gfx_b=0.392; gfx_a=1;
+    gfx_rect(_px, max(_in_y,_out_y), 1, _bot_y - max(_in_y,_out_y));
+    // Gain change band: warm red = reduction, teal = boost
+    _in_y < _out_y ? (
+      gfx_r=0.490; gfx_g=0.200; gfx_b=0.160;
+      gfx_rect(_px, _in_y, 1, _out_y - _in_y);
+    ) : _out_y < _in_y ? (
+      gfx_r=0.160; gfx_g=0.490; gfx_b=0.360;
+      gfx_rect(_px, _out_y, 1, _in_y - _out_y);
+    );
     _p += 1;
   );
+);
+
+// dB grid lines (overlaid on scrolling bars)
+gfx_r = 0.180; gfx_g = 0.200; gfx_b = 0.240; gfx_a = 0.8;
+_gdb = -10;
+loop(5,
+  _gy = disp_y + disp_h * (-_gdb / 60);
+  gfx_line(disp_x, _gy, disp_x + disp_w, _gy, 0);
+  _gdb -= 10;
+);
+
+// dB axis labels (left edge of display)
+gfx_setfont(2);
+gfx_r = 0.380; gfx_g = 0.400; gfx_b = 0.450; gfx_a = 1;
+_gdb = -10;
+loop(5,
+  _gy = disp_y + disp_h * (-_gdb / 60);
+  sprintf(#_lbl, "%d", _gdb);
+  gfx_measurestr(#_lbl, str_w, str_h);
+  gfx_x = disp_x + 3; gfx_y = _gy - str_h * 0.5;
+  gfx_drawstr(#_lbl);
+  _gdb -= 10;
 );
 
 // Phase 5: Transfer curve (both axes: 0 dB at top, -60 dB at bottom)
@@ -440,9 +476,8 @@ loop(99,
   gfx_lineto(_cx, _cy, 1);
 );
 
-// Live input dot on curve — slow RMS level (log deferred from @sample)
-_vis_db = vis_meansq > TINY ? LOG2DB * 0.5 * log(vis_meansq) : -200;
-_dot_in  = max(-60, min(0, _vis_db));
+// Live input dot on curve — slow RMS level (pre-computed above)
+_dot_in  = max(-60, min(0, _vis_rms_db));
 _dot_out = max(-60, min(0, _dot_in + ui_gain_db(_dot_in)));
 _dot_x = disp_x + disp_w * (_dot_in  + 60) / 60;
 _dot_y = disp_y + disp_h * (-_dot_out / 60);
@@ -450,6 +485,27 @@ gfx_r = 1.0; gfx_g = 1.0; gfx_b = 1.0; gfx_a = 1;
 gfx_circle(_dot_x, _dot_y, 4, 1, 1);
 gfx_r = 0.100; gfx_g = 0.120; gfx_b = 0.160;
 gfx_circle(_dot_x, _dot_y, 4, 0, 1);
+
+// PK and RMS readouts (top-right of display)
+gfx_setfont(2);
+gfx_r = 0.580; gfx_g = 0.630; gfx_b = 0.710; gfx_a = 1;
+vis_peak_db > -190 ? (
+  sprintf(#_pkstr, "PK %.1f", max(-60.0, vis_peak_db));
+) : (
+  sprintf(#_pkstr, "PK ---");
+);
+gfx_measurestr(#_pkstr, str_w, str_h);
+gfx_x = disp_x + disp_w - str_w - 4; gfx_y = disp_y + 4;
+gfx_drawstr(#_pkstr);
+
+_vis_rms_db > -190 ? (
+  sprintf(#_rmsstr, "RMS %.1f", max(-60.0, _vis_rms_db));
+) : (
+  sprintf(#_rmsstr, "RMS ---");
+);
+gfx_measurestr(#_rmsstr, str_w, str_h);
+gfx_x = disp_x + disp_w - str_w - 4; gfx_y = disp_y + 4 + str_h + 2;
+gfx_drawstr(#_rmsstr);
 
 // --- Left column knobs ---
 gfx_setfont(1);
@@ -521,7 +577,17 @@ gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
 gfx_rect(bx-1, by-1, bw+2, bh+2);
 gfx_r = 0.157; gfx_g = 0.157; gfx_b = 0.180;
 gfx_rect(bx, by, bw, bh);
-gfx_r = 0.533; gfx_g = 0.533; gfx_b = 0.565;
-gfx_measurestr("GR: --", str_w, str_h);
+_gr_db = LOG2DB * log(max(gain_smooth, TINY));
+_gr_db < -0.05 ? (
+  gfx_r = 0.800; gfx_g = 0.500; gfx_b = 0.350;
+  sprintf(#_grstr, "GR %.1f dB", _gr_db);
+) : _gr_db > 0.05 ? (
+  gfx_r = 0.350; gfx_g = 0.750; gfx_b = 0.550;
+  sprintf(#_grstr, "GR +%.1f dB", _gr_db);
+) : (
+  gfx_r = 0.533; gfx_g = 0.533; gfx_b = 0.565;
+  sprintf(#_grstr, "GR 0.0 dB");
+);
+gfx_measurestr(#_grstr, str_w, str_h);
 gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
-gfx_drawstr("GR: --");
+gfx_drawstr(#_grstr);
