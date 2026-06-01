@@ -42,6 +42,7 @@ LA_BUF_R    = 1024;
 LA_BUF_SIZE = 1024;
 
 env_det           = 0;
+vis_meansq        = 0;  // UI-only: slow RMS follower for the live input dot
 gain_smooth       = 1.0;
 hold_counter      = 0;
 direction         = 1;
@@ -140,6 +141,7 @@ hold_ms      = slider9;
 atk_coeff    = 1 - exp(-log(10) / max(attack_ms  * srate / 1000, 1));
 rel_coeff    = 1 - exp(-log(10) / max(release_ms * srate / 1000, 1));
 rms_coeff    = 1 - exp(-1 / (0.005 * srate));
+vis_rms_coeff = 1 - exp(-1 / (0.150 * srate));  // ~150ms RMS for the visual dot
 hold_samples = floor(hold_ms * srate / 1000);
 
 lookahead_samples = min(floor(slider10 * srate / 1000), LA_BUF_SIZE - 1);
@@ -157,6 +159,9 @@ det = max(abs(spl0), abs(spl1));
 
 // Light pre-smoothing (~5ms) to prevent chatter
 env_det += rms_coeff * (det - env_det);
+
+// UI-only slow RMS follower (integrate mean-square; log deferred to @gfx)
+vis_meansq += vis_rms_coeff * (det * det - vis_meansq);
 
 // Convert to dB
 env_db = env_det > TINY ? LOG2DB * log(env_det) : -200;
@@ -435,8 +440,9 @@ loop(99,
   gfx_lineto(_cx, _cy, 1);
 );
 
-// Live input dot on curve
-_dot_in  = max(-60, min(0, env_db));
+// Live input dot on curve — slow RMS level (log deferred from @sample)
+_vis_db = vis_meansq > TINY ? LOG2DB * 0.5 * log(vis_meansq) : -200;
+_dot_in  = max(-60, min(0, _vis_db));
 _dot_out = max(-60, min(0, _dot_in + ui_gain_db(_dot_in)));
 _dot_x = disp_x + disp_w * (_dot_in  + 60) / 60;
 _dot_y = disp_y + disp_h * (-_dot_out / 60);
