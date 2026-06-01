@@ -91,11 +91,11 @@ ui_disp_enabled = 1;
 HIST_IN_BUF    = 2048;
 HIST_OUT_BUF   = 4096;
 HIST_BUF_SIZE  = 2048;
-HIST_DISP_SAMP = 300;
+HIST_DISP_SAMP = 600;
 
 hist_write_pos  = 0;
 hist_ds_counter = 0;
-hist_ds_rate    = max(1, floor(srate * 0.010));
+hist_ds_rate    = max(1, floor(srate * 0.005));
 
 memset(HIST_IN_BUF,  -200, HIST_BUF_SIZE);
 memset(HIST_OUT_BUF, -200, HIST_BUF_SIZE);
@@ -393,6 +393,33 @@ gfx_line(disp_x, disp_y + disp_h, disp_x + disp_w, disp_y, 1);
 _thr_x = disp_x + disp_w * max(0, min(1, (threshold_db + 60) / 60));
 gfx_r = 0.220; gfx_g = 0.250; gfx_b = 0.300;
 gfx_line(_thr_x, disp_y, _thr_x, disp_y + disp_h, 1);
+
+// Range reference line (dashed, parallel to unity, displaced by range_db)
+// Downward: output = input - range_db  |  Upward: output = input + range_db
+gfx_r = 0.300; gfx_g = 0.200; gfx_b = 0.400; gfx_a = 1;
+direction == 1 ? (
+  _rng_x1 = disp_x + disp_w * min(1, range_db / 60);
+  _rng_y1 = disp_y + disp_h;
+  _rng_x2 = disp_x + disp_w;
+  _rng_y2 = disp_y + disp_h * min(1, range_db / 60);
+) : (
+  _rng_x1 = disp_x;
+  _rng_y1 = disp_y + disp_h * max(0, (60 - range_db) / 60);
+  _rng_x2 = disp_x + disp_w * max(0, (60 - range_db) / 60);
+  _rng_y2 = disp_y;
+);
+_rdx = _rng_x2 - _rng_x1; _rdy = _rng_y2 - _rng_y1;
+_rlen = sqrt(_rdx * _rdx + _rdy * _rdy);
+_rlen > 0 ? (
+  _rnx = _rdx / _rlen; _rny = _rdy / _rlen;
+  _rt = 0;
+  loop(floor(_rlen / 10) + 1,
+    _rt1x = _rng_x1 + _rt * _rnx; _rt1y = _rng_y1 + _rt * _rny;
+    _rt2 = min(_rt + 6, _rlen);
+    gfx_line(_rt1x, _rt1y, _rng_x1 + _rt2 * _rnx, _rng_y1 + _rt2 * _rny, 1);
+    _rt += 10;
+  );
+);
 
 // Curve polyline: 100 steps from -60 to 0 dB
 gfx_r = 0.400; gfx_g = 0.700; gfx_b = 0.950; gfx_a = 1;
