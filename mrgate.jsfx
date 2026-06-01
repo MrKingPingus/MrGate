@@ -88,6 +88,18 @@ SLIDER_MIN_TABLE[7]=0;    SLIDER_MAX_TABLE[7]=10;
 
 ui_disp_enabled = 1;
 
+HIST_IN_BUF    = 2048;
+HIST_OUT_BUF   = 4096;
+HIST_BUF_SIZE  = 2048;
+HIST_DISP_SAMP = 300;
+
+hist_write_pos  = 0;
+hist_ds_counter = 0;
+hist_ds_rate    = max(1, floor(srate * 0.010));
+
+memset(HIST_IN_BUF,  -200, HIST_BUF_SIZE);
+memset(HIST_OUT_BUF, -200, HIST_BUF_SIZE);
+
 @slider
 mode_id = slider1;
 
@@ -200,6 +212,16 @@ spl1 = LA_BUF_R[read_pos] * gain_smooth;
 
 la_write_pos = (la_write_pos + 1) % LA_BUF_SIZE;
 
+hist_ds_counter += 1;
+hist_ds_counter >= hist_ds_rate ? (
+  hist_ds_counter = 0;
+  ui_disp_enabled ? (
+    HIST_IN_BUF[hist_write_pos]  = env_db;
+    HIST_OUT_BUF[hist_write_pos] = env_db + LOG2DB * log(max(gain_smooth, TINY));
+    hist_write_pos = (hist_write_pos + 1) % HIST_BUF_SIZE;
+  );
+);
+
 @gfx
 function ui_draw_knob(cx, cy, r, t)
 local(scx, scy, sr, ang, ix, iy)
@@ -237,6 +259,23 @@ local(scx, scy, sr, ang, ix, iy)
   gfx_circle(ix, iy, max(2, 3 * min(ui_sx, ui_sy)), 1, 1);
 );
 
+function ui_gain_db(in_db)
+local(_act, _tmp, _ag)
+(
+  _act = -direction * (in_db - threshold_db);
+  _act < -(knee_db * 0.5) ? (
+    _ag = 0;
+  ) : knee_db > 0 && _act < knee_db * 0.5 ? (
+    _tmp = _act + knee_db * 0.5;
+    _ag = min((ratio - 1) * _tmp * _tmp / (2 * knee_db), range_db);
+    _ag = -direction * _ag;
+  ) : (
+    _ag = min((ratio - 1) * _act, range_db);
+    _ag = -direction * _ag;
+  );
+  _ag
+);
+
 // Define fonts each frame (safe to call repeatedly in @gfx)
 gfx_setfont(1, "Arial", 11);
 gfx_setfont(2, "Arial", 10);
@@ -244,6 +283,11 @@ gfx_setfont(2, "Arial", 10);
 // Scale factors
 ui_sx = gfx_w / 700;
 ui_sy = gfx_h / 420;
+
+disp_x = 130 * ui_sx;
+disp_y = 48 * ui_sy;
+disp_w = 440 * ui_sx;
+disp_h = 312 * ui_sy;
 
 // Normalize slider values to 0..1 for knob drawing
 t_thresh = (slider3 + 80) / 80;
@@ -313,13 +357,66 @@ gfx_measurestr("General", str_w, str_h);
 gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
 gfx_drawstr("General");
 
-// --- Center display placeholder ---
+// --- Display area ---
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314; gfx_a = 1;
+gfx_rect(disp_x-1, disp_y-1, disp_w+2, disp_h+2);
+gfx_r = 0.039; gfx_g = 0.047; gfx_b = 0.063;
+gfx_rect(disp_x, disp_y, disp_w, disp_h);
+
+// Phase 6: Scrolling level history (0 dB at top, -60 dB at bottom)
 ui_disp_enabled ? (
-  gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
-  gfx_rect(129*ui_sx, 47*ui_sy, 442*ui_sx, 314*ui_sy);
-  gfx_r = 0.055; gfx_g = 0.055; gfx_b = 0.071;
-  gfx_rect(130*ui_sx, 48*ui_sy, 440*ui_sx, 312*ui_sy);
+  _disp_w_px = floor(disp_w);
+  _bot_y = disp_y + disp_h;
+  _p = 0;
+  loop(_disp_w_px,
+    _buf_age = floor((_disp_w_px - 1 - _p) * HIST_DISP_SAMP / _disp_w_px);
+    _buf_idx = (hist_write_pos + HIST_BUF_SIZE - 1 - _buf_age) % HIST_BUF_SIZE;
+    _in_db  = max(-60, min(0, HIST_IN_BUF[_buf_idx]));
+    _out_db = max(-60, min(0, HIST_OUT_BUF[_buf_idx]));
+    _px = disp_x + _p;
+    _in_y  = disp_y + disp_h * (-_in_db  / 60);
+    _out_y = disp_y + disp_h * (-_out_db / 60);
+    gfx_r = 0.071; gfx_g = 0.212; gfx_b = 0.392; gfx_a = 1;
+    gfx_rect(_px, _in_y, 1, _bot_y - _in_y);
+    gfx_r = 0.157; gfx_g = 0.471; gfx_b = 0.784;
+    gfx_rect(_px, _out_y, 1, _bot_y - _out_y);
+    _p += 1;
+  );
 );
+
+// Phase 5: Transfer curve (both axes: 0 dB at top, -60 dB at bottom)
+// Unity reference line (45 degree diagonal)
+gfx_r = 0.180; gfx_g = 0.200; gfx_b = 0.240; gfx_a = 1;
+gfx_line(disp_x, disp_y + disp_h, disp_x + disp_w, disp_y, 1);
+
+// Threshold reference line (vertical)
+_thr_x = disp_x + disp_w * max(0, min(1, (threshold_db + 60) / 60));
+gfx_r = 0.220; gfx_g = 0.250; gfx_b = 0.300;
+gfx_line(_thr_x, disp_y, _thr_x, disp_y + disp_h, 1);
+
+// Curve polyline: 100 steps from -60 to 0 dB
+gfx_r = 0.400; gfx_g = 0.700; gfx_b = 0.950; gfx_a = 1;
+_in_db_c = -60;
+_out_db_c = max(-60, min(0, _in_db_c + ui_gain_db(_in_db_c)));
+gfx_x = disp_x;
+gfx_y = disp_y + disp_h * (-_out_db_c / 60);
+loop(99,
+  _in_db_c += 60 / 99;
+  _out_db_c = max(-60, min(0, _in_db_c + ui_gain_db(_in_db_c)));
+  _cx = disp_x + disp_w * (_in_db_c + 60) / 60;
+  _cy = disp_y + disp_h * (-_out_db_c / 60);
+  gfx_lineto(_cx, _cy, 1);
+);
+
+// Live input dot on curve
+_dot_in  = max(-60, min(0, env_db));
+_dot_out = max(-60, min(0, _dot_in + ui_gain_db(_dot_in)));
+_dot_x = disp_x + disp_w * (_dot_in  + 60) / 60;
+_dot_y = disp_y + disp_h * (-_dot_out / 60);
+gfx_r = 1.0; gfx_g = 1.0; gfx_b = 1.0; gfx_a = 1;
+gfx_circle(_dot_x, _dot_y, 4, 1, 1);
+gfx_r = 0.100; gfx_g = 0.120; gfx_b = 0.160;
+gfx_circle(_dot_x, _dot_y, 4, 0, 1);
 
 // --- Left column knobs ---
 gfx_setfont(1);
