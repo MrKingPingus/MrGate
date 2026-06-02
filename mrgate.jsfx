@@ -16,6 +16,7 @@ slider7:1<0.05,100,0.05>Attack (ms)
 slider8:100<5,5000,1>Release (ms)
 slider9:10<0,250,1>Hold (ms)
 slider10:0<0,10,0.1>Lookahead (ms)
+slider11:20<20,500,1>SC HP (Hz)
 
 @init
 // Memory layout:
@@ -24,9 +25,9 @@ slider10:0<0,10,0.1>Lookahead (ms)
 //   2048..4095: level history ring buffer (input)     [Phase 6]
 //   4096..6143: level history ring buffer (output)    [Phase 6]
 //   6144..6175: transfer curve cached points          [Phase 5]
-//   6200..6223: mode defaults table (3 modes × 8 params) [Phase 4]
-//   6230..6237: slider min table (8 entries)          [Phase 4]
-//   6240..6247: slider max table (8 entries)          [Phase 4]
+//   6200..6226: mode defaults table (3 modes × 9 params) [Phase 4]
+//   6230..6238: slider min table (9 entries)          [Phase 4]
+//   6240..6248: slider max table (9 entries)          [Phase 4]
 
 LOG2DB = 20 / log(10);
 DB2LOG = log(10) / 20;
@@ -45,6 +46,9 @@ env_det           = 0;
 vis_meansq          = 0;    // UI-only: slow RMS follower for the live input dot
 vis_rms_readout_ms  = 0;    // UI-only: long-window RMS for the readout text
 vis_peak_db         = -200; // UI-only: max peak hold for the readout text
+sc_hp_state_l = 0;
+sc_hp_state_r = 0;
+sc_hp_coeff   = 0;          // 0 = bypassed (slider at minimum 20 Hz)
 gain_smooth       = 1.0;
 hold_counter      = 0;
 direction         = 1;
@@ -70,15 +74,18 @@ DEFAULT_TABLE    = 6200;
 SLIDER_MIN_TABLE = 6230;
 SLIDER_MAX_TABLE = 6240;
 
+// Gate defaults (indices 0-8: thresh, ratio, range, knee, atk, rel, hold, la, sc_hp)
 DEFAULT_TABLE[0]=-40;  DEFAULT_TABLE[1]=10;  DEFAULT_TABLE[2]=40;
 DEFAULT_TABLE[3]=3;    DEFAULT_TABLE[4]=1;   DEFAULT_TABLE[5]=100;
-DEFAULT_TABLE[6]=10;   DEFAULT_TABLE[7]=0;
-DEFAULT_TABLE[8]=-50;  DEFAULT_TABLE[9]=2;   DEFAULT_TABLE[10]=12;
-DEFAULT_TABLE[11]=9;   DEFAULT_TABLE[12]=10; DEFAULT_TABLE[13]=250;
-DEFAULT_TABLE[14]=0;   DEFAULT_TABLE[15]=0;
-DEFAULT_TABLE[16]=-20; DEFAULT_TABLE[17]=2;  DEFAULT_TABLE[18]=6;
-DEFAULT_TABLE[19]=6;   DEFAULT_TABLE[20]=5;  DEFAULT_TABLE[21]=200;
-DEFAULT_TABLE[22]=0;   DEFAULT_TABLE[23]=0;
+DEFAULT_TABLE[6]=10;   DEFAULT_TABLE[7]=0;   DEFAULT_TABLE[8]=20;
+// Downward defaults (indices 9-17)
+DEFAULT_TABLE[9]=-50;  DEFAULT_TABLE[10]=2;  DEFAULT_TABLE[11]=12;
+DEFAULT_TABLE[12]=9;   DEFAULT_TABLE[13]=10; DEFAULT_TABLE[14]=250;
+DEFAULT_TABLE[15]=0;   DEFAULT_TABLE[16]=0;  DEFAULT_TABLE[17]=20;
+// Upward defaults (indices 18-26)
+DEFAULT_TABLE[18]=-20; DEFAULT_TABLE[19]=2;  DEFAULT_TABLE[20]=6;
+DEFAULT_TABLE[21]=6;   DEFAULT_TABLE[22]=5;  DEFAULT_TABLE[23]=200;
+DEFAULT_TABLE[24]=0;   DEFAULT_TABLE[25]=0;  DEFAULT_TABLE[26]=20;
 
 SLIDER_MIN_TABLE[0]=-80;  SLIDER_MAX_TABLE[0]=0;
 SLIDER_MIN_TABLE[1]=1;    SLIDER_MAX_TABLE[1]=30;
@@ -88,6 +95,7 @@ SLIDER_MIN_TABLE[4]=0.05; SLIDER_MAX_TABLE[4]=100;
 SLIDER_MIN_TABLE[5]=5;    SLIDER_MAX_TABLE[5]=5000;
 SLIDER_MIN_TABLE[6]=0;    SLIDER_MAX_TABLE[6]=250;
 SLIDER_MIN_TABLE[7]=0;    SLIDER_MAX_TABLE[7]=10;
+SLIDER_MIN_TABLE[8]=20;   SLIDER_MAX_TABLE[8]=500;
 
 ui_disp_enabled = 1;
 
@@ -112,20 +120,21 @@ mode_id != last_mode ? (
   mode_id == MODE_GATE ? (
     slider3 = -40; slider4 = 10; slider5 = 40;
     slider6 = 3;   slider7 = 1;  slider8 = 100;
-    slider9 = 10;  slider10 = 0;
+    slider9 = 10;  slider10 = 0; slider11 = 20;
   ) : mode_id == MODE_DOWN ? (
     slider3 = -50; slider4 = 2;  slider5 = 12;
     slider6 = 9;   slider7 = 10; slider8 = 250;
-    slider9 = 0;   slider10 = 0;
+    slider9 = 0;   slider10 = 0; slider11 = 20;
   ) : (
     slider3 = -20; slider4 = 2;  slider5 = 6;
     slider6 = 6;   slider7 = 5;  slider8 = 200;
-    slider9 = 0;   slider10 = 0;
+    slider9 = 0;   slider10 = 0; slider11 = 20;
   );
   slider_automate(slider3);  slider_automate(slider4);
   slider_automate(slider5);  slider_automate(slider6);
   slider_automate(slider7);  slider_automate(slider8);
   slider_automate(slider9);  slider_automate(slider10);
+  slider_automate(slider11);
 );
 
 // +1 = downward (Gate/Down): process below threshold
@@ -152,13 +161,24 @@ pdc_delay   = lookahead_samples;
 pdc_bot_ch  = 0;
 pdc_top_ch  = 2;
 
+// Sidechain highpass: 0 = bypassed when at minimum (20 Hz)
+sc_hp_coeff = slider11 > 20.5 ? (1 - exp(-2 * $pi * slider11 / srate)) : 0;
+
 @sample
 // Write current (undelayed) input into lookahead buffer
 LA_BUF_L[la_write_pos] = spl0;
 LA_BUF_R[la_write_pos] = spl1;
 
-// --- Peak detection (stereo linked) on undelayed signal ---
-det = max(abs(spl0), abs(spl1));
+// --- Peak detection (stereo linked) with optional sidechain highpass ---
+// HP filter is a first-order highpass on the raw audio before rectification.
+// sc_hp_coeff == 0 means bypassed (slider at 20 Hz minimum).
+sc_hp_coeff > 0 ? (
+  sc_hp_state_l += sc_hp_coeff * (spl0 - sc_hp_state_l);
+  sc_hp_state_r += sc_hp_coeff * (spl1 - sc_hp_state_r);
+  det = max(abs(spl0 - sc_hp_state_l), abs(spl1 - sc_hp_state_r));
+) : (
+  det = max(abs(spl0), abs(spl1));
+);
 
 // Light pre-smoothing (~5ms) to prevent chatter
 env_det += rms_coeff * (det - env_det);
@@ -312,6 +332,7 @@ t_atk    = (slider7 - 0.05) / 99.95;
 t_rel    = (slider8 - 5) / 4995;
 t_hold   = slider9 / 250;
 t_la     = slider10 / 10;
+t_sc_hp  = (slider11 - 20) / 480;
 
 // --- Background ---
 gfx_r = 0.102; gfx_g = 0.102; gfx_b = 0.118; gfx_a = 1;
@@ -589,7 +610,25 @@ ui_disp_enabled ? (
   gfx_drawstr("Display OFF");
 );
 
-// GR placeholder
+// SC HP knob — centered between display toggle and GR readout
+// ui_draw_knob applies ui_sx/ui_sy internally, so pass layout coords directly
+_schp_cx = 350*ui_sx; _schp_cy = 385*ui_sy; _schp_r = 14*min(ui_sx,ui_sy);
+gfx_setfont(2);
+gfx_r = 0.533; gfx_g = 0.533; gfx_b = 0.565;
+ui_draw_knob(350, 385, 14, t_sc_hp);
+gfx_measurestr("SC HP", str_w, str_h);
+gfx_x = _schp_cx - str_w*0.5; gfx_y = _schp_cy - _schp_r - str_h - 2;
+gfx_drawstr("SC HP");
+slider11 > 20.5 ? (
+  sprintf(#_schpv, "%d Hz", floor(slider11));
+) : (
+  sprintf(#_schpv, "off");
+);
+gfx_measurestr(#_schpv, str_w, str_h);
+gfx_x = _schp_cx - str_w*0.5; gfx_y = _schp_cy + _schp_r + 2;
+gfx_drawstr(#_schpv);
+
+// GR readout
 bx = 545*ui_sx; bw = 145*ui_sx;
 gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
 gfx_rect(bx-1, by-1, bw+2, bh+2);

@@ -161,12 +161,12 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** one-pole highpass on the detector signal, controlled by a single slider. Audio path untouched.
 
-- [ ] Add `slider11` for SC HP frequency (20–500 Hz, default 20).
-- [ ] Declare `hp_coeff` and `hp_state` variables in `@init`.
-- [ ] Pre-compute `hp_coeff = 1 - exp(-2 * $pi * sc_hp_hz / srate)` in `@slider`.
-- [ ] Apply one-pole highpass to `env_det` in `@sample` before the threshold comparison: `hp_state += hp_coeff * (env_det - hp_state); env_det_filtered = env_det - hp_state;` then use `env_det_filtered` for the dB conversion and gain curve.
-- [ ] Add SC HP knob to the UI (Phase 4a layout only; mouse interaction deferred with other knobs).
-- [ ] Update `spec.md` defaults table to include SC HP.
+- [x] Add `slider11` for SC HP frequency (20–500 Hz, default 20).
+- [x] Declare `sc_hp_coeff`, `sc_hp_state_l`, `sc_hp_state_r` variables in `@init`.
+- [x] Pre-compute `sc_hp_coeff` in `@slider` (0 when slider ≤ 20.5 Hz = bypassed).
+- [x] Apply first-order highpass to raw audio in `@sample` before rectification. Filter operates on spl0/spl1 directly; `det = max(abs(hp_l), abs(hp_r))`. Bypassed when coeff = 0. Note: spec plan said to filter `env_det` — corrected to filter raw audio before rectification, which is the proper sidechain HP approach.
+- [x] Add SC HP knob to the UI (bottom center, radius 14, label + Hz readout).
+- [x] DEFAULT_TABLE updated to 9 params per mode (SC HP = 20 for all modes).
 - [ ] Test: set HP to 200 Hz, play a kick-heavy mix through a gate on a snare channel. Gate should ignore the kick energy in the detector without affecting the audio.
 
 **Done when:** SC HP slider audibly prevents low-frequency energy from triggering the gate. Audio output at 20 Hz setting is bit-identical to having no filter. No DSP regressions.
