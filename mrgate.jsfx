@@ -42,9 +42,9 @@ LA_BUF_R    = 1024;
 LA_BUF_SIZE = 1024;
 
 env_det           = 0;
-vis_meansq        = 0;  // UI-only: slow RMS follower for the live input dot
-vis_peak_db       = -200;
-vis_peak_decay    = 10 / srate;  // 10 dB/sec ballistic drop
+vis_meansq          = 0;    // UI-only: slow RMS follower for the live input dot
+vis_rms_readout_ms  = 0;    // UI-only: long-window RMS for the readout text
+vis_peak_db         = -200; // UI-only: max peak hold for the readout text
 gain_smooth       = 1.0;
 hold_counter      = 0;
 direction         = 1;
@@ -94,11 +94,11 @@ ui_disp_enabled = 1;
 HIST_IN_BUF    = 2048;
 HIST_OUT_BUF   = 4096;
 HIST_BUF_SIZE  = 2048;
-HIST_DISP_SAMP = 600;
+HIST_DISP_SAMP = 1000;  // ~3s window at 3ms resolution
 
 hist_write_pos  = 0;
 hist_ds_counter = 0;
-hist_ds_rate    = max(1, floor(srate * 0.005));
+hist_ds_rate    = max(1, floor(srate * 0.003));
 
 memset(HIST_IN_BUF,  -200, HIST_BUF_SIZE);
 memset(HIST_OUT_BUF, -200, HIST_BUF_SIZE);
@@ -144,6 +144,7 @@ atk_coeff    = 1 - exp(-log(10) / max(attack_ms  * srate / 1000, 1));
 rel_coeff    = 1 - exp(-log(10) / max(release_ms * srate / 1000, 1));
 rms_coeff    = 1 - exp(-1 / (0.005 * srate));
 vis_rms_coeff = 1 - exp(-1 / (0.150 * srate));  // ~150ms RMS for the visual dot
+vis_rms_readout_coeff = 1 - exp(-1 / (1.0 * srate));  // ~1s RMS for the stable readout
 hold_samples = floor(hold_ms * srate / 1000);
 
 lookahead_samples = min(floor(slider10 * srate / 1000), LA_BUF_SIZE - 1);
@@ -164,12 +165,14 @@ env_det += rms_coeff * (det - env_det);
 
 // UI-only slow RMS follower (integrate mean-square; log deferred to @gfx)
 vis_meansq += vis_rms_coeff * (det * det - vis_meansq);
+// UI-only long-window RMS for the readout (settles to a stable average)
+vis_rms_readout_ms += vis_rms_readout_coeff * (det * det - vis_rms_readout_ms);
 
 // Convert to dB
 env_db = env_det > TINY ? LOG2DB * log(env_det) : -200;
 
-// UI-only peak hold with slow ballistic drop (needs current env_db)
-vis_peak_db = max(env_db, vis_peak_db - vis_peak_decay);
+// UI-only max peak hold (true maximum over time)
+vis_peak_db = max(vis_peak_db, env_db);
 
 // --- Hold counter ---
 env_db >= threshold_db ? (
@@ -286,13 +289,14 @@ local(_act, _tmp, _ag)
   _ag
 );
 
-// Define fonts each frame (safe to call repeatedly in @gfx)
-gfx_setfont(1, "Arial", 11);
-gfx_setfont(2, "Arial", 10);
-
 // Scale factors
 ui_sx = gfx_w / 700;
 ui_sy = gfx_h / 420;
+ui_fs = min(ui_sx, ui_sy);
+
+// Define fonts each frame, scaled to the window size
+gfx_setfont(1, "Arial", max(12, floor(18 * ui_fs)));
+gfx_setfont(2, "Arial", max(11, floor(15 * ui_fs)));
 
 disp_x = 130 * ui_sx;
 disp_y = 48 * ui_sy;
@@ -376,15 +380,28 @@ gfx_rect(disp_x, disp_y, disp_w, disp_h);
 _vis_rms_db = vis_meansq > TINY ? LOG2DB * 0.5 * log(vis_meansq) : -200;
 
 // Phase 6: Scrolling level history (0 dB at top, -60 dB at bottom)
+// Per-pixel peak bucketing: each column takes the peak over the samples it
+// covers, which anti-aliases the downsampling and removes scroll shimmer.
 ui_disp_enabled ? (
   _disp_w_px = floor(disp_w);
   _bot_y = disp_y + disp_h;
+  _aspan = _disp_w_px > 1 ? (HIST_DISP_SAMP - 1) / (_disp_w_px - 1) : 0;
+  _half  = _aspan * 0.5;
   _p = 0;
   loop(_disp_w_px,
-    _buf_age = floor((_disp_w_px - 1 - _p) * HIST_DISP_SAMP / _disp_w_px);
-    _buf_idx = (hist_write_pos + HIST_BUF_SIZE - 1 - _buf_age) % HIST_BUF_SIZE;
-    _in_db  = max(-60, min(0, HIST_IN_BUF[_buf_idx]));
-    _out_db = max(-60, min(0, HIST_OUT_BUF[_buf_idx]));
+    _age_c     = (_disp_w_px - 1 - _p) * _aspan;
+    _age_start = max(0, floor(_age_c - _half));
+    _age_end   = min(HIST_DISP_SAMP - 1, floor(_age_c + _half));
+    _in_db = -200; _out_db = -200;
+    _a = _age_start;
+    loop(_age_end - _age_start + 1,
+      _bi = (hist_write_pos + HIST_BUF_SIZE - 1 - _a) % HIST_BUF_SIZE;
+      _iv = HIST_IN_BUF[_bi];  _iv > _in_db  ? _in_db  = _iv;
+      _ov = HIST_OUT_BUF[_bi]; _ov > _out_db ? _out_db = _ov;
+      _a += 1;
+    );
+    _in_db  = max(-60, min(0, _in_db));
+    _out_db = max(-60, min(0, _out_db));
     _px = disp_x + _p;
     _in_y  = disp_y + disp_h * (-_in_db  / 60);
     _out_y = disp_y + disp_h * (-_out_db / 60);
@@ -498,8 +515,9 @@ gfx_measurestr(#_pkstr, str_w, str_h);
 gfx_x = disp_x + disp_w - str_w - 4; gfx_y = disp_y + 4;
 gfx_drawstr(#_pkstr);
 
-_vis_rms_db > -190 ? (
-  sprintf(#_rmsstr, "RMS %.1f", max(-60.0, _vis_rms_db));
+_vis_rms_rd_db = vis_rms_readout_ms > TINY ? LOG2DB * 0.5 * log(vis_rms_readout_ms) : -200;
+_vis_rms_rd_db > -190 ? (
+  sprintf(#_rmsstr, "RMS %.1f", max(-60.0, _vis_rms_rd_db));
 ) : (
   sprintf(#_rmsstr, "RMS ---");
 );
