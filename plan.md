@@ -157,14 +157,44 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 ---
 
+## Phase 8 — Sidechain Highpass Filter
+
+**Goal:** one-pole highpass on the detector signal, controlled by a single slider. Audio path untouched.
+
+- [ ] Add `slider11` for SC HP frequency (20–500 Hz, default 20).
+- [ ] Declare `hp_coeff` and `hp_state` variables in `@init`.
+- [ ] Pre-compute `hp_coeff = 1 - exp(-2 * $pi * sc_hp_hz / srate)` in `@slider`.
+- [ ] Apply one-pole highpass to `env_det` in `@sample` before the threshold comparison: `hp_state += hp_coeff * (env_det - hp_state); env_det_filtered = env_det - hp_state;` then use `env_det_filtered` for the dB conversion and gain curve.
+- [ ] Add SC HP knob to the UI (Phase 4a layout only; mouse interaction deferred with other knobs).
+- [ ] Update `spec.md` defaults table to include SC HP.
+- [ ] Test: set HP to 200 Hz, play a kick-heavy mix through a gate on a snare channel. Gate should ignore the kick energy in the detector without affecting the audio.
+
+**Done when:** SC HP slider audibly prevents low-frequency energy from triggering the gate. Audio output at 20 Hz setting is bit-identical to having no filter. No DSP regressions.
+
+---
+
+## Phase 9 — External Sidechain
+
+**Goal:** route Reaper channels 3/4 into the detector. Toggle between internal and external modes in the UI.
+
+- [ ] Add `in_pin:sidechain left` and `in_pin:sidechain right` declarations.
+- [ ] Add `slider12` for sidechain source (0 = internal, 1 = external).
+- [ ] In `@sample`: when external mode, `det = max(abs(spl2), abs(spl3))` instead of main input.
+- [ ] SC HP filter applies to whichever source is active (no change to the filter logic itself).
+- [ ] Add sidechain source toggle button to the UI.
+- [ ] When external sidechain is active, scrolling display shows the external signal level instead of main input, so the user can see the trigger signal vs. gain reduction relationship.
+- [ ] Test: route a kick drum to the sidechain, put a sustained pad through the main input. Gate should duck on kick hits.
+
+**Done when:** external sidechain routes correctly. Scrolling display switches to show external signal level. No DSP regressions in internal mode.
+
+---
+
 ## Deferred
 
 Captured here so they don't get lost. Move to a phase when ready.
 
 - Additional styles (Vocal, Drums, Guitar, Ducking, etc.) — populate the Style dropdown.
 - Mid-side processing.
-- External sidechain.
-- Sidechain EQ.
 - Wet/Dry mix.
 - Oversampling.
 - MIDI trigger.

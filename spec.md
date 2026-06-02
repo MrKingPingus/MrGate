@@ -67,8 +67,9 @@ The single algorithm used in v1. Specification:
 
 ### Routing
 
-- Stereo only for v1. Channel link uses max envelope of L/R.
-- Mid-side and external sidechain are out of scope for v1.
+- Stereo only. Channel link uses max envelope of L/R.
+- Mid-side is out of scope.
+- External sidechain is supported via extra input pins (see Phase 9).
 
 ### Visual feedback (the centerpiece)
 
@@ -84,14 +85,36 @@ The single algorithm used in v1. Specification:
 - Style dropdown: `[ General ]` (described above).
 - Display toggle: enables/disables the scrolling level history.
 
-## Out of Scope (v1)
+### Sidechain highpass filter (Phase 8)
 
-These are explicitly NOT in v1. Do not implement them. They may be revisited later.
+A one-pole highpass filter on the **detector signal only** — the audio path is unaffected. Controlled by a single "SC HP" slider.
+
+| Control | Range | Notes |
+|---|---|---|
+| SC HP | 20 to 500 Hz | Highpass cutoff applied to the detection envelope before threshold comparison. 20 Hz = effectively bypassed. |
+
+- Filter is a one-pole IIR highpass (first-order Butterworth) applied to `env_det` in `@sample` using a coefficient pre-computed in `@slider`.
+- Only the detector signal is filtered; the audio output path is completely unaffected.
+- Useful for preventing low-frequency energy (kick bleed, rumble) from triggering the gate on mid/high sources.
+- Default: 20 Hz (bypassed) across all modes.
+- Visual feedback: the scrolling display and live dot continue to show the unfiltered input level (what's going into the mix), but the threshold line shows where the *filtered* detector is being compared. A second visual trace for the filtered detector level is a future option, not required in Phase 8.
+
+### External sidechain (Phase 9)
+
+Routes an external signal (Reaper channels 3/4) into the detector instead of the main input.
+
+- Declared via additional `in_pin:` declarations: `in_pin:sidechain left` / `in_pin:sidechain right`.
+- A "Sidechain" toggle button in the UI switches between internal (default) and external modes.
+- When external is active: `det = max(abs(spl2), abs(spl3))` instead of `max(abs(spl0), abs(spl1))`.
+- The SC HP filter applies to whichever signal source is active.
+- Visual feedback: when external sidechain is active, the scrolling display shows the sidechain signal level (instead of main input) alongside the output level, so the user can see the relationship between the trigger signal and the gain reduction.
+
+## Out of Scope
+
+These are explicitly not planned. Do not implement them without explicit user approval and a spec update.
 
 - Additional styles (Vocal, Drums, Guitar, Ducking, etc.).
 - Mid-side processing.
-- External sidechain input.
-- Sidechain EQ / filtering.
 - Wet/Dry mix control.
 - Oversampling (any kind).
 - MIDI trigger / MIDI Learn.
