@@ -133,21 +133,38 @@ A single fixed-aspect window. Approximate proportions:
 ```
 +------------------------------------------------------------------+
 |  [Gate]  [Downward]  [Upward]              Style: [General ▾]    |
-|                                                                  |
-|  Threshold                                       Attack          |
-|  Ratio                                           Release         |
-|  Range       |---- Scrolling Level Display ----| Hold            |
-|  Knee        |     + Transfer Curve            | Lookahead       |
-|              |     + Live Input Dot            |                 |
-|              +----------------------------------+                |
-|                                                                  |
-|  [In Meter]                                          [Out Meter] |
-|                                                                  |
-|  [Display Toggle]                              [Gain Reduction]  |
+|                                                                   |
+|  +------ Main Display (620 × 312) --------+  ATTACK             |
+|  |  scrolling level history (background)   |  [  1.0 ms ]        |
+|  |  transfer curve (overlay)               |  RELEASE            |
+|  |  threshold line — drag left/right       |  [ 100 ms ]         |
+|  |  range cap line — drag up/down          |  HOLD               |
+|  |  knee region   — drag to widen/narrow   |  [  10 ms ]         |
+|  |  ratio slope   — drag to steepen/ease   |  LOOKAHEAD          |
+|  |  live input dot on curve                |  [   0 ms ]         |
+|  |  PK / RMS readouts (top-right)          |  SC HP              |
+|  |  dB grid lines                          |  [  off   ]         |
+|  +------------------------------------------+                    |
+|                                                                   |
+|  [Display ON]                              [GR  0.0 dB]         |
 +------------------------------------------------------------------+
 ```
 
-Specific pixel values, colors, and visual treatment will be decided in the UI phases. The above is structural only.
+There are no knobs. Curve parameters (Threshold, Ratio, Range, Knee) are adjusted directly on the display. Time parameters (Attack, Release, Hold, Lookahead, SC HP) are adjusted via compact draggable value strips in the right panel. The JSFX default sliders remain available as a precise fallback.
+
+### Display interaction
+
+| Element | Interaction |
+|---|---|
+| Threshold line (vertical) | Drag left/right — maps x pixel to threshold_db |
+| Range cap line (dashed diagonal) | Drag up/down — maps y delta to range_db |
+| Knee region | Drag left/right within knee band — maps x delta to knee_db |
+| Ratio slope | Drag up/down on active curve segment — maps y delta to ratio |
+| Hover | Within ~8px of a draggable line: highlight it and show cursor feedback |
+
+### Right panel value strips
+
+Five stacked controls in a ~75px column to the right of the display: Attack, Release, Hold, Lookahead, SC HP. Each shows a centered label and the current value with units, and responds to vertical drag (up = increase, down = decrease). Shift = 10× finer. Mode-change resets apply as before.
 
 ## Sound Design Targets (subjective)
 

@@ -59,86 +59,75 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 ---
 
-## Phase 4a — Layout Skeleton + Static Knob Drawing
+## Phase 4a — Layout Skeleton (no knobs)
 
-**Goal:** `@gfx` renders the complete layout as static art — no mouse interaction yet. All pixel constants, colors, angles, and positions are pre-decided in `layout.md`. Translate spec to code; make no design decisions.
+**Goal:** Replace knob columns with the new display-centric layout. Static drawing only — no mouse interaction yet.
 
-- [ ] Add `gfx_w = 700; gfx_h = 420;` to `@init`. Define all `layout.md` constants: `KNOB_R`, `ANG_MIN`, `ANG_SWEEP`, `KNOB_L_X`, `KNOB_R_X`, 4 Y positions, slider min/max tables, and defaults table at address 6200.
-- [ ] Set fonts 1–3 in `@init` via `gfx_setfont` (per `layout.md`).
-- [ ] Implement `function ui_draw_knob(cx, cy, r, t)` — body circle, track arc, fill arc, indicator dot.
-- [ ] Draw top bar (background, all three mode buttons, style dropdown). Active mode button (per `slider1`) uses COL_BTN_ACTIVE; others use COL_BTN_INACTIVE.
-- [ ] Draw display placeholder rect (center area, `layout.md` dimensions).
-- [ ] Draw all 8 knobs using each slider's current value normalized per `layout.md` normalization table.
-- [ ] Draw knob labels (hard-coded strings, centered `KNOB_R + 5` below each knob center).
-- [ ] Draw bottom bar (display toggle button, GR placeholder).
+- [x] Top bar: mode buttons + style dropdown (already working).
+- [x] Display area: scrolling history + transfer curve (already working, Phases 5/6 done).
+- [ ] Remove `ui_draw_knob` function and all knob drawing code from `@gfx`.
+- [ ] Remove knob layout constants from `@init` (`KNOB_R`, `ANG_MIN`, `ANG_SWEEP`, `KNOB_L_X`, `KNOB_R_X`, `KNOB_Y0..Y3`).
+- [ ] Expand display: `disp_x = 5`, `disp_w = 620` (was 440, reclaiming both former knob columns).
+- [ ] Add right panel (x=630..695, y=48..360): draw 5 stacked value strips for Attack, Release, Hold, Lookahead, SC HP. Each strip: label centered at top, current value + unit centered below. Strip height = (disp_h / 5).
+- [ ] Relocate SC HP knob drawing to the right panel strip (was bottom-center).
+- [ ] Bottom bar: Display toggle + GR readout (already working).
 
-**Done when:** plugin renders the full layout in Reaper. Active mode button highlighted. All labels visible. No interaction. No DSP regressions.
-
----
-
-## Phase 4b — Mouse Interaction
-
-**Goal:** all knobs respond to mouse drag, scroll, ctrl+click, and double-click. Reference `layout.md` for all sensitivity values and state-variable names.
-
-- [ ] Add to `@init`: `ui_drag_knob = -1`, `ui_drag_start_y`, `ui_drag_start_v`, `ui_prev_lmb`, `ui_last_click_t`, `ui_disp_enabled = 1`. Add `SLIDER_MIN_TABLE` and `SLIDER_MAX_TABLE` arrays (8 entries each) and `DEFAULT_TABLE` (24 entries) per `layout.md`.
-- [ ] Knob hit test: circular check, 1.5× visual radius hit target.
-- [ ] Drag-to-adjust: 200 px = full range. Shift held = 10× slower. Write result to correct slider, call `sliderchange()`.
-- [ ] Ctrl+click or double-click (< 0.4 s between clicks): reset to `DEFAULT_TABLE[mode_id * 8 + knob_index]`, call `sliderchange()`.
-- [ ] Scroll-wheel nudge: ±0.5% of range per tick.
-
-**Done when:** all 8 knobs adjustable. Audible in real time. Shift slows, ctrl resets, scroll nudges. No DSP regressions.
+**Done when:** plugin renders without knobs. Display is 620px wide. Right panel shows all 5 time controls as labeled value strips. No DSP regressions.
 
 ---
 
-## Phase 4c — Mode Buttons + Style Dropdown Interaction
+## Phase 4b — On-Display Parameter Interaction
 
-**Goal:** clicking the mode row and style dropdown updates plugin state.
+**Goal:** Threshold, Ratio, Range, and Knee are draggable directly on the transfer curve display.
 
-- [ ] On LMB click on a mode button: write `slider1 = mode_index`, call `sliderchange()`. Existing `@slider` logic fires the defaults reload.
-- [ ] On LMB click on style dropdown: no-op (single option).
+- [ ] Add mouse state variables to `@init`: `ui_mouse_cap_prev`, `ui_drag_param` (-1 = none), `ui_drag_start_x`, `ui_drag_start_y`, `ui_drag_start_v`.
+- [ ] Each frame in `@gfx`: read `mouse_x`, `mouse_y`, `mouse_cap`. On LMB down, hit-test each draggable element (see below). On drag, compute delta and update slider + call `sliderchange()`. On LMB up, clear `ui_drag_param`.
+- [ ] **Threshold line** (vertical at `_thr_x`): hit if `abs(mouse_x - _thr_x) < 8*ui_sx`. Drag maps x delta to threshold_db: `threshold_db = clamp(-60 * (mouse_x - disp_x) / disp_w, -80, 0)`.
+- [ ] **Range cap line** (dashed diagonal): hit if mouse is within 8px of the line. Drag up/down: `range_db = clamp(range_db - dy * 60 / disp_h, 0, 60)`.
+- [ ] **Knee region** (band around threshold): hit if `abs(mouse_x - _thr_x) < (knee_db/60)*disp_w/2 + 8`. Drag left/right: `knee_db = clamp(knee_db + dx * 48 / disp_w, 0, 24)`. Priority below threshold.
+- [ ] **Ratio slope** (curve segment beyond knee): hit if mouse is on the active-slope portion and not already matched by threshold/knee. Drag up/down: `ratio = clamp(ratio - dy * 29 / disp_h, 1, 30)`.
+- [ ] Hover highlight: when mouse is within hit distance of an element (and no drag is active), draw that element brighter.
+- [ ] Shift key held: all delta computations scaled by 0.1× for fine adjustment.
 
-**Done when:** clicking a mode button switches mode, reloads defaults, and the correct button highlights. No DSP regressions.
+**Done when:** all four curve parameters adjustable by dragging on the display. Changes are audible in real time. Hover highlights show before drag starts. No DSP regressions.
 
 ---
 
-## Phase 4d — Value Readouts + Display Toggle
+## Phase 4c — Right Panel Interaction
 
-**Goal:** numeric value labels under each knob, and the display toggle button works.
+**Goal:** the five time-control strips respond to vertical drag.
 
-- [ ] Draw formatted value string `KNOB_R + 19` below each knob center. Format strings per `layout.md` value-readout table.
-- [ ] On LMB click on display toggle button: `ui_disp_enabled = 1 - ui_disp_enabled`. Update button visual (COL_BTN_ACTIVE when on, COL_BTN_INACTIVE when off).
-- [ ] When `ui_disp_enabled = 0`: skip drawing the center placeholder rect.
+- [ ] Add `ui_drag_strip` (-1 = none), `ui_drag_strip_start_y`, `ui_drag_strip_start_v` to `@init`.
+- [ ] Hit test: LMB down inside a strip rect → record which strip and start value.
+- [ ] Drag: map y delta to value change proportional to the slider's range. 200px = full range. Shift = 10× slower.
+- [ ] Write result to correct slider, call `sliderchange()`.
+- [ ] Scroll wheel: when mouse is over a strip, nudge ±0.5% of range per tick.
 
-**Done when:** all knobs show current value. Display toggle button updates visually on click. No DSP regressions.
+**Done when:** all five time controls draggable. Shift slows. Scroll nudges. No DSP regressions.
+
+---
+
+## Phase 4d — Mode Buttons + Display Toggle Interaction
+
+**Goal:** clicking the mode buttons and display toggle updates plugin state.
+
+- [ ] LMB click on a mode button: `slider1 = mode_index`, call `sliderchange()`.
+- [ ] LMB click on style dropdown: no-op (single option).
+- [ ] LMB click on display toggle: `ui_disp_enabled = 1 - ui_disp_enabled`.
+
+**Done when:** mode switching works via the custom buttons. Display toggle fires on click. No DSP regressions.
 
 ---
 
 ## Phase 5 — Transfer Curve Display
 
-**Goal:** the static transfer curve overlay with live input dot.
-
-- [ ] Compute curve points from threshold/ratio/range/knee/direction in `@slider` (cache them).
-- [ ] Draw axes and dB labels.
-- [ ] Draw the curve as a polyline. Geometry flips for upward mode.
-- [ ] Draw threshold/range reference lines (dashed).
-- [ ] Pass current input level from `@sample` to `@gfx` via a shared variable.
-- [ ] Draw the live input dot at the correct position on the curve, updating at UI rate.
-- [ ] Make threshold/range/ratio/knee draggable directly on the curve.
-
-**Done when:** curve updates in real time when knobs change. Curve geometry is correct in all three modes. Dragging the curve adjusts the underlying parameters. Input dot tracks the audio level visibly.
+**(Complete)** Transfer curve, dashed range line, threshold line, live input dot, dB grid, PK/RMS readouts all implemented and working.
 
 ---
 
 ## Phase 6 — Scrolling Level History
 
-**Goal:** the real-time scrolling input/output level graph.
-
-- [ ] Allocate ring buffers for input and output level history in `@init`.
-- [ ] Push input and output peak values into the buffers in `@sample` (downsampled — once per ~10ms is plenty).
-- [ ] Draw the history as filled regions in `@gfx` — input dark, output light.
-- [ ] Verify the display toggle disables drawing (and ideally also pauses buffer updates to save CPU).
-
-**Done when:** scrolling display updates smoothly at the UI refresh rate. Visual reads well at a glance. Disable toggle works and demonstrably reduces CPU load.
+**(Complete)** Ring-buffer scrolling display with three-color gain band (dark blue / warm red / teal) implemented. Peak-bucketed anti-aliasing applied for smooth scrolling.
 
 ---
 
@@ -146,9 +135,8 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** the difference between "works" and "feels good."
 
-- [ ] Hover states on all interactive elements.
-- [ ] Smooth value interpolation for displayed numeric values (avoid flickering).
-- [ ] Consistent color palette and typography across all UI.
+- [ ] Hover cursor feedback (brightness change already in 4b; consider distinct colors per parameter type).
+- [ ] Consistent color palette: threshold = one color family, ratio = another, range = another, knee = another.
 - [ ] Test at multiple Reaper UI scales and screen DPIs.
 - [ ] Final by-ear pass on real mix material across all three modes.
 - [ ] Write a short README for the plugin.
