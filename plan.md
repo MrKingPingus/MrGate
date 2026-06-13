@@ -103,11 +103,11 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** the five time-control strips respond to vertical drag.
 
-- [ ] Add `ui_drag_strip` (-1 = none), `ui_drag_strip_start_y`, `ui_drag_strip_start_v` to `@init`.
-- [ ] Hit test: LMB down inside a strip rect → record which strip and start value.
-- [ ] Drag: map y delta to value change proportional to the slider's range. 200px = full range. Shift = 10× slower.
-- [ ] Write result to correct slider, call `sliderchange()`.
-- [ ] Scroll wheel: when mouse is over a strip, nudge ±0.5% of range per tick.
+- [x] Add `ui_drag_strip` (-1 = none), `ui_drag_strip_start_y`, `ui_drag_strip_start_v` to `@init`.
+- [x] Hit test: LMB down inside a strip rect → record which strip and start value.
+- [x] Drag: map y delta to value change proportional to the slider's range. 200px = full range. Shift = 10× slower.
+- [x] Write result to correct slider, call `slider_automate()` + `params_update()`.
+- [x] Scroll wheel: when mouse is over a strip, nudge ±0.5% of range per tick.
 
 **Done when:** all five time controls draggable. Shift slows. Scroll nudges. No DSP regressions.
 
@@ -117,9 +117,9 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** clicking the mode buttons and display toggle updates plugin state.
 
-- [ ] LMB click on a mode button: `slider1 = mode_index`, call `sliderchange()`.
-- [ ] LMB click on style dropdown: no-op (single option).
-- [ ] LMB click on display toggle: `ui_disp_enabled = 1 - ui_disp_enabled`.
+- [x] LMB click on a mode button: `slider1 = mode_index`, call `slider_automate()` + `params_update()`.
+- [x] LMB click on style dropdown: no-op (single option).
+- [x] LMB click on display toggle: `ui_disp_enabled = 1 - ui_disp_enabled`.
 
 **Done when:** mode switching works via the custom buttons. Display toggle fires on click. No DSP regressions.
 
