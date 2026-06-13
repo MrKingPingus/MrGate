@@ -135,6 +135,14 @@ ui_drag_grab_y    = 0;   // mouse y in pixels at grab
 ui_drag_start_v   = 0;   // parameter value at grab
 ui_knee_edge_sign = 1;   // +1 = grabbed right knee edge, -1 = left
 
+// Grab handle positions (computed in @gfx each frame; hit-tested next frame)
+h_thr_x = h_thr_y = -1000;
+h_kl_x  = h_kl_y  = -1000;
+h_kr_x  = h_kr_y  = -1000;
+h_rng_x = h_rng_y = -1000;
+h_rat_x = h_rat_y = -1000;
+rs_x1 = rs_y1 = rs_x2 = rs_y2 = -1000;  // active slope segment (ratio hit test)
+
 HIST_IN_BUF    = 2048;
 HIST_OUT_BUF   = 4096;
 HIST_BUF_SIZE  = 2048;
@@ -299,6 +307,17 @@ local(_act, _tmp, _ag)
   _ag
 );
 
+// Grab handle: filled dot with dark outline. Caller sets fill color; hot = hovered/dragged.
+function ui_draw_handle(hx, hy, hot)
+local(hr)
+(
+  hr = (hot ? 6 : 4.5) * ui_fs;
+  gfx_a = 1;
+  gfx_circle(hx, hy, hr, 1, 1);
+  gfx_r = 0.055; gfx_g = 0.065; gfx_b = 0.085;
+  gfx_circle(hx, hy, hr, 0, 1);
+);
+
 // Scale factors
 ui_sx = gfx_w / 700;
 ui_sy = gfx_h / 420;
@@ -325,7 +344,8 @@ _rp_sh = _rp_h / 5;
 // range dashed line (drag U/D), curve active slope (drag U/D = ratio).
 // Scroll wheel over the knee band adjusts knee width (works even at knee = 0).
 _mw = mouse_wheel; mouse_wheel = 0;
-_hit_r = 7 * ui_fs;
+_hit_line = 8 * ui_fs;                    // line hit half-width
+_hr2 = 12 * ui_fs; _hr2 *= _hr2;          // handle hit radius, squared
 _m_in_disp = mouse_x >= disp_x && mouse_x <= disp_x + disp_w &&
              mouse_y >= disp_y && mouse_y <= disp_y + disp_h;
 _m_db_x = -60 + 60 * (mouse_x - disp_x) / disp_w;  // mouse x as input dB (unclamped)
@@ -337,24 +357,39 @@ _kr_x   = disp_x + disp_w * max(0, min(1, (threshold_db + knee_db * 0.5 + 60) / 
 _rl_out   = _m_db_x - direction * range_db;
 _rl_valid = _rl_out >= -60 && _rl_out <= 0;
 _rl_y     = disp_y + disp_h * (-max(-60, min(0, _rl_out)) / 60);
-// Curve y at mouse x
-_cv_g   = ui_gain_db(_m_db_x);
-_cv_out = max(-60, min(0, _m_db_x + _cv_g));
-_cv_y   = disp_y + disp_h * (-_cv_out / 60);
 
-// Hover hit test (priority order), only when not already dragging
+// Hover hit test, only when not already dragging. Priority: grab handles
+// (positions stored from last frame — 1-frame lag is imperceptible at UI
+// rate), then the lines themselves, then the active slope segment.
 ui_hover_param = -1;
 ui_drag_param < 0 && _m_in_disp ? (
-  abs(mouse_x - _thr_x) < _hit_r ? (
+  (_dx = mouse_x - h_thr_x; _dy = mouse_y - h_thr_y; _dx*_dx + _dy*_dy < _hr2) ? (
     ui_hover_param = 0;
-  ) : knee_db > 0.1 && abs(mouse_x - _kl_x) < _hit_r ? (
+  ) : (_dx = mouse_x - h_kl_x; _dy = mouse_y - h_kl_y; _dx*_dx + _dy*_dy < _hr2) ? (
     ui_hover_param = 3; ui_knee_edge_sign = -1;
-  ) : knee_db > 0.1 && abs(mouse_x - _kr_x) < _hit_r ? (
+  ) : (_dx = mouse_x - h_kr_x; _dy = mouse_y - h_kr_y; _dx*_dx + _dy*_dy < _hr2) ? (
     ui_hover_param = 3; ui_knee_edge_sign = 1;
-  ) : _rl_valid && abs(mouse_y - _rl_y) < _hit_r + 2 ? (
+  ) : (_dx = mouse_x - h_rng_x; _dy = mouse_y - h_rng_y; _dx*_dx + _dy*_dy < _hr2) ? (
     ui_hover_param = 2;
-  ) : abs(mouse_y - _cv_y) < _hit_r + 2 && abs(_cv_g) > 0.25 ? (
+  ) : (_dx = mouse_x - h_rat_x; _dy = mouse_y - h_rat_y; _dx*_dx + _dy*_dy < _hr2) ? (
     ui_hover_param = 1;
+  ) : abs(mouse_x - _thr_x) < _hit_line ? (
+    ui_hover_param = 0;
+  ) : knee_db > 0.1 && abs(mouse_x - _kl_x) < _hit_line ? (
+    ui_hover_param = 3; ui_knee_edge_sign = -1;
+  ) : knee_db > 0.1 && abs(mouse_x - _kr_x) < _hit_line ? (
+    ui_hover_param = 3; ui_knee_edge_sign = 1;
+  ) : _rl_valid && abs(mouse_y - _rl_y) < _hit_line + 2 ? (
+    ui_hover_param = 2;
+  ) : (
+    // Distance to the active slope segment — robust even when the slope is
+    // near-vertical (high ratio), where a y-proximity test fails.
+    _svx = rs_x2 - rs_x1; _svy = rs_y2 - rs_y1;
+    _sl2 = _svx * _svx + _svy * _svy;
+    _st  = _sl2 > 0 ? max(0, min(1, ((mouse_x - rs_x1) * _svx + (mouse_y - rs_y1) * _svy) / _sl2)) : 0;
+    _sdx = mouse_x - (rs_x1 + _st * _svx);
+    _sdy = mouse_y - (rs_y1 + _st * _svy);
+    _sdx * _sdx + _sdy * _sdy < (10 * ui_fs) * (10 * ui_fs) ? ui_hover_param = 1;
   );
 );
 
@@ -405,6 +440,60 @@ _mw != 0 && _m_in_disp && ui_drag_param < 0 &&
   slider_automate(slider6);
   params_update();
 );
+
+// --- Grab handle positions (recomputed after any edit; drawn this frame,
+//     hit-tested next frame) ---
+// Threshold handle: on the curve at the threshold input level
+h_thr_x = disp_x + disp_w * max(0, min(1, (threshold_db + 60) / 60));
+_h_in  = max(-60, min(0, threshold_db));
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+h_thr_y = disp_y + disp_h * (-_h_out / 60);
+
+// Knee handles: at the knee edges, but never closer than 16px to the
+// threshold handle so they stay grabbable when knee = 0
+_k_off = max(knee_db * 0.5 * disp_w / 60, 16 * ui_fs);
+h_kl_x = max(disp_x + 4, min(disp_x + disp_w - 4, h_thr_x - _k_off));
+h_kr_x = max(disp_x + 4, min(disp_x + disp_w - 4, h_thr_x + _k_off));
+_h_in  = -60 + 60 * (h_kl_x - disp_x) / disp_w;
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+h_kl_y = disp_y + disp_h * (-_h_out / 60);
+_h_in  = -60 + 60 * (h_kr_x - disp_x) / disp_w;
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+h_kr_y = disp_y + disp_h * (-_h_out / 60);
+
+// Active slope segment: from the knee edge to where the slope leaves the
+// display (or hits the range cap, whichever comes first). Ratio handle at
+// its midpoint.
+_h_in  = max(-60, min(0, threshold_db - direction * knee_db * 0.5));
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+rs_x1  = disp_x + disp_w * (_h_in + 60) / 60;
+rs_y1  = disp_y + disp_h * (-_h_out / 60);
+direction == 1 ? (
+  // Downward: slope exits at out = -60 (in = ((r-1)*thr - 60)/r) or range cap
+  _h_in = max(((ratio - 1) * threshold_db - 60) / max(ratio, 1),
+              threshold_db - range_db / max(ratio - 1, 0.05));
+) : (
+  // Upward: slope exits at out = 0 (in = (r-1)*thr/r) or range cap
+  _h_in = min((ratio - 1) * threshold_db / max(ratio, 1),
+              threshold_db + range_db / max(ratio - 1, 0.05));
+);
+_h_in  = max(-60, min(0, _h_in));
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+rs_x2  = disp_x + disp_w * (_h_in + 60) / 60;
+rs_y2  = disp_y + disp_h * (-_h_out / 60);
+h_rat_x = (rs_x1 + rs_x2) * 0.5;
+h_rat_y = (rs_y1 + rs_y2) * 0.5;
+
+// Range handle: midpoint of the dashed range line
+direction == 1 ? (
+  _r1x = disp_x + disp_w * min(1, range_db / 60); _r1y = disp_y + disp_h;
+  _r2x = disp_x + disp_w; _r2y = disp_y + disp_h * min(1, range_db / 60);
+) : (
+  _r1x = disp_x; _r1y = disp_y + disp_h * max(0, (60 - range_db) / 60);
+  _r2x = disp_x + disp_w * max(0, (60 - range_db) / 60); _r2y = disp_y;
+);
+h_rng_x = (_r1x + _r2x) * 0.5;
+h_rng_y = (_r1y + _r2y) * 0.5;
 
 // Active element for highlighting: dragged param wins over hover
 _hl = ui_drag_param >= 0 ? ui_drag_param : ui_hover_param;
@@ -616,6 +705,21 @@ gfx_r = 1.0; gfx_g = 1.0; gfx_b = 1.0; gfx_a = 1;
 gfx_circle(_dot_x, _dot_y, 4, 1, 1);
 gfx_r = 0.100; gfx_g = 0.120; gfx_b = 0.160;
 gfx_circle(_dot_x, _dot_y, 4, 0, 1);
+
+// Grab handles (color-matched to their element, brighter when hovered/dragged)
+_hl == 3 ? (gfx_r = 0.700; gfx_g = 0.800; gfx_b = 0.920;)
+         : (gfx_r = 0.310; gfx_g = 0.390; gfx_b = 0.500;);
+ui_draw_handle(h_kl_x, h_kl_y, _hl == 3);
+ui_draw_handle(h_kr_x, h_kr_y, _hl == 3);
+_hl == 2 ? (gfx_r = 0.760; gfx_g = 0.560; gfx_b = 0.940;)
+         : (gfx_r = 0.470; gfx_g = 0.330; gfx_b = 0.620;);
+ui_draw_handle(h_rng_x, h_rng_y, _hl == 2);
+_hl == 1 ? (gfx_r = 0.640; gfx_g = 0.870; gfx_b = 1.000;)
+         : (gfx_r = 0.330; gfx_g = 0.580; gfx_b = 0.810;);
+ui_draw_handle(h_rat_x, h_rat_y, _hl == 1);
+_hl == 0 ? (gfx_r = 0.800; gfx_g = 0.880; gfx_b = 0.970;)
+         : (gfx_r = 0.450; gfx_g = 0.540; gfx_b = 0.660;);
+ui_draw_handle(h_thr_x, h_thr_y, _hl == 0);
 
 // PK and RMS readouts (top-right of display)
 gfx_setfont(2);

@@ -89,6 +89,8 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 - [x] **Knee via scroll wheel** (addition): scrolling over the knee band adjusts width ±1 dB per notch (±0.2 with shift) — this is the only way to grab knee when it's at 0 and the edges coincide with the threshold line.
 - [x] **Ratio slope**: drag up/down on the active curve segment (where |gain| > 0.25 dB). Direction-aware: dragging toward the processed side steepens. Full range ≈ half the display height.
 - [x] Hover highlight: hovered/dragged element draws brighter (threshold, knee edges, range line, curve).
+- [x] **Grab handles** (post-test revision): visible color-matched dots on every element — threshold (on curve), both knee edges (minimum 16px offset from the threshold handle so they stay grabbable at knee = 0), range line midpoint, and slope midpoint. Generous circular hit zones (12px), tested before the lines.
+- [x] **Slope hit test** (post-test revision): replaced y-proximity with point-to-segment distance against the active slope (knee edge → display exit / range cap), which works even when high ratios make the slope near-vertical.
 - [x] Resize cursors: ↔ for threshold/knee, ↕ for ratio/range.
 - [x] Live parameter readout top-left of display while hovering or dragging (name + value).
 - [x] Shift key: all drags 10× finer.
