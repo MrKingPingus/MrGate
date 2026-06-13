@@ -65,14 +65,14 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 - [x] Top bar: mode buttons + style dropdown (already working).
 - [x] Display area: scrolling history + transfer curve (already working, Phases 5/6 done).
-- [ ] Remove `ui_draw_knob` function and all knob drawing code from `@gfx`.
-- [ ] Remove knob layout constants from `@init` (`KNOB_R`, `ANG_MIN`, `ANG_SWEEP`, `KNOB_L_X`, `KNOB_R_X`, `KNOB_Y0..Y3`).
-- [ ] Expand display: `disp_x = 5`, `disp_w = 620` (was 440, reclaiming both former knob columns).
-- [ ] Add right panel (x=630..695, y=48..360): draw 5 stacked value strips for Attack, Release, Hold, Lookahead, SC HP. Each strip: label centered at top, current value + unit centered below. Strip height = (disp_h / 5).
-- [ ] Relocate SC HP knob drawing to the right panel strip (was bottom-center).
-- [ ] Bottom bar: Display toggle + GR readout (already working).
+- [x] Remove `ui_draw_knob` function and all knob drawing code from `@gfx`.
+- [x] Remove knob layout constants from `@init` (`KNOB_R`, `ANG_MIN`, `ANG_SWEEP`, `KNOB_L_X`, `KNOB_R_X`, `KNOB_Y0..Y3`).
+- [x] Expand display: `disp_x = 5`, `disp_w = 615` (was 440, reclaiming both former knob columns).
+- [x] Add right panel (x=623, w=72): 5 stacked value strips for Attack, Release, Hold, Lookahead, SC HP. Each strip: label centered at top, current value + unit centered below. Strip height = panel height / 5.
+- [x] Relocate SC HP to the right panel strip (was bottom-center knob).
+- [x] Bottom bar: Display toggle + GR readout (already working).
 
-**Done when:** plugin renders without knobs. Display is 620px wide. Right panel shows all 5 time controls as labeled value strips. No DSP regressions.
+**Done when:** plugin renders without knobs. Display is ~620px wide. Right panel shows all 5 time controls as labeled value strips. No DSP regressions. — **Confirmed in Reaper.**
 
 ---
 
@@ -80,14 +80,18 @@ This is the phased plan for building Mr. Gate. Reference this file in Claude Cod
 
 **Goal:** Threshold, Ratio, Range, and Knee are draggable directly on the transfer curve display.
 
-- [ ] Add mouse state variables to `@init`: `ui_mouse_cap_prev`, `ui_drag_param` (-1 = none), `ui_drag_start_x`, `ui_drag_start_y`, `ui_drag_start_v`.
-- [ ] Each frame in `@gfx`: read `mouse_x`, `mouse_y`, `mouse_cap`. On LMB down, hit-test each draggable element (see below). On drag, compute delta and update slider + call `sliderchange()`. On LMB up, clear `ui_drag_param`.
-- [ ] **Threshold line** (vertical at `_thr_x`): hit if `abs(mouse_x - _thr_x) < 8*ui_sx`. Drag maps x delta to threshold_db: `threshold_db = clamp(-60 * (mouse_x - disp_x) / disp_w, -80, 0)`.
-- [ ] **Range cap line** (dashed diagonal): hit if mouse is within 8px of the line. Drag up/down: `range_db = clamp(range_db - dy * 60 / disp_h, 0, 60)`.
-- [ ] **Knee region** (band around threshold): hit if `abs(mouse_x - _thr_x) < (knee_db/60)*disp_w/2 + 8`. Drag left/right: `knee_db = clamp(knee_db + dx * 48 / disp_w, 0, 24)`. Priority below threshold.
-- [ ] **Ratio slope** (curve segment beyond knee): hit if mouse is on the active-slope portion and not already matched by threshold/knee. Drag up/down: `ratio = clamp(ratio - dy * 29 / disp_h, 1, 30)`.
-- [ ] Hover highlight: when mouse is within hit distance of an element (and no drag is active), draw that element brighter.
-- [ ] Shift key held: all delta computations scaled by 0.1× for fine adjustment.
+- [x] Refactor: parameter conversion moved from `@slider` body into `params_update()` defined in `@init`, called from both `@slider` and `@gfx`. Required because writing a slider from `@gfx` does not re-run `@slider`.
+- [x] Mouse state variables in `@init`: `ui_drag_param` (-1 = none), `ui_hover_param`, `ui_prev_cap`, `ui_drag_grab_x/y`, `ui_drag_start_v`, `ui_knee_edge_sign`.
+- [x] Each frame in `@gfx`: hover hit-test (priority: threshold → knee edges → range line → curve slope), grab on LMB press, relative drag from grab point, release clears drag. Updates slider + `slider_automate()` + `params_update()`.
+- [x] **Threshold line**: drag left/right, tracks mouse x 1:1 in dB. Display maps -60..0; dragging past the left edge reaches down to -80.
+- [x] **Range cap line**: drag up/down, tracks mouse y 1:1 in dB. Direction-aware (down = more range in downward modes, up = more in upward).
+- [x] **Knee edges** (deviation from plan): instead of a band drag, the two knee-edge lines at threshold ± knee/2 are individually draggable (edge tracks mouse; 1 dB of edge motion = 2 dB of width). Edge lines are now drawn (faint, brighter on hover).
+- [x] **Knee via scroll wheel** (addition): scrolling over the knee band adjusts width ±1 dB per notch (±0.2 with shift) — this is the only way to grab knee when it's at 0 and the edges coincide with the threshold line.
+- [x] **Ratio slope**: drag up/down on the active curve segment (where |gain| > 0.25 dB). Direction-aware: dragging toward the processed side steepens. Full range ≈ half the display height.
+- [x] Hover highlight: hovered/dragged element draws brighter (threshold, knee edges, range line, curve).
+- [x] Resize cursors: ↔ for threshold/knee, ↕ for ratio/range.
+- [x] Live parameter readout top-left of display while hovering or dragging (name + value).
+- [x] Shift key: all drags 10× finer.
 
 **Done when:** all four curve parameters adjustable by dragging on the display. Changes are audible in real time. Hover highlights show before drag starts. No DSP regressions.
 
