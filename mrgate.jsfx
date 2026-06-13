@@ -16,14 +16,18 @@ slider7:1<0.05,100,0.05>Attack (ms)
 slider8:100<5,5000,1>Release (ms)
 slider9:10<0,250,1>Hold (ms)
 slider10:0<0,10,0.1>Lookahead (ms)
+slider11:20<20,500,1>SC HP (Hz)
 
 @init
 // Memory layout:
-//   0..1023   : lookahead delay buffer (left)   [Phase 3]
-//   1024..2047: lookahead delay buffer (right)  [Phase 3]
-//   2048..4095: level history ring buffer (input)   [Phase 6]
-//   4096..6143: level history ring buffer (output)  [Phase 6]
-//   6144..6175: transfer curve cached points [Phase 5]
+//   0..1023   : lookahead delay buffer (left)         [Phase 3]
+//   1024..2047: lookahead delay buffer (right)        [Phase 3]
+//   2048..4095: level history ring buffer (input)     [Phase 6]
+//   4096..6143: level history ring buffer (output)    [Phase 6]
+//   6144..6175: transfer curve cached points          [Phase 5]
+//   6200..6226: mode defaults table (3 modes × 9 params) [Phase 4]
+//   6230..6238: slider min table (9 entries)          [Phase 4]
+//   6240..6248: slider max table (9 entries)          [Phase 4]
 
 LOG2DB = 20 / log(10);
 DB2LOG = log(10) / 20;
@@ -39,12 +43,122 @@ LA_BUF_R    = 1024;
 LA_BUF_SIZE = 1024;
 
 env_det           = 0;
+vis_meansq          = 0;    // UI-only: slow RMS follower for the live input dot
+vis_rms_readout_ms  = 0;    // UI-only: long-window RMS for the readout text
+vis_peak_db         = -200; // UI-only: max peak hold for the readout text
+sc_hp_state_l = 0;
+sc_hp_state_r = 0;
+sc_hp_coeff   = 0;          // 0 = bypassed (slider at minimum 20 Hz)
 gain_smooth       = 1.0;
 hold_counter      = 0;
 direction         = 1;
 la_write_pos      = 0;
 lookahead_samples = 0;
 last_mode         = slider1;  // avoids resetting params on preset load
+
+// --- UI layout constants ---
+gfx_w = 700;
+gfx_h = 420;
+
+// Right panel strips (Attack/Release/Hold/Lookahead/SC HP)
+RP_X      = 630;   // left edge of right panel (layout coords)
+RP_W      = 65;    // width of right panel
+RP_Y_TOP  = 48;    // top of right panel (below top bar)
+RP_Y_BOT  = 362;   // bottom of right panel
+
+DEFAULT_TABLE    = 6200;
+SLIDER_MIN_TABLE = 6230;
+SLIDER_MAX_TABLE = 6240;
+
+// Gate defaults (indices 0-8: thresh, ratio, range, knee, atk, rel, hold, la, sc_hp)
+DEFAULT_TABLE[0]=-40;  DEFAULT_TABLE[1]=10;  DEFAULT_TABLE[2]=40;
+DEFAULT_TABLE[3]=3;    DEFAULT_TABLE[4]=1;   DEFAULT_TABLE[5]=100;
+DEFAULT_TABLE[6]=10;   DEFAULT_TABLE[7]=0;   DEFAULT_TABLE[8]=20;
+// Downward defaults (indices 9-17)
+DEFAULT_TABLE[9]=-50;  DEFAULT_TABLE[10]=2;  DEFAULT_TABLE[11]=12;
+DEFAULT_TABLE[12]=9;   DEFAULT_TABLE[13]=10; DEFAULT_TABLE[14]=250;
+DEFAULT_TABLE[15]=0;   DEFAULT_TABLE[16]=0;  DEFAULT_TABLE[17]=20;
+// Upward defaults (indices 18-26)
+DEFAULT_TABLE[18]=-20; DEFAULT_TABLE[19]=2;  DEFAULT_TABLE[20]=6;
+DEFAULT_TABLE[21]=6;   DEFAULT_TABLE[22]=5;  DEFAULT_TABLE[23]=200;
+DEFAULT_TABLE[24]=0;   DEFAULT_TABLE[25]=0;  DEFAULT_TABLE[26]=20;
+
+SLIDER_MIN_TABLE[0]=-80;  SLIDER_MAX_TABLE[0]=0;
+SLIDER_MIN_TABLE[1]=1;    SLIDER_MAX_TABLE[1]=30;
+SLIDER_MIN_TABLE[2]=0;    SLIDER_MAX_TABLE[2]=60;
+SLIDER_MIN_TABLE[3]=0;    SLIDER_MAX_TABLE[3]=24;
+SLIDER_MIN_TABLE[4]=0.05; SLIDER_MAX_TABLE[4]=100;
+SLIDER_MIN_TABLE[5]=5;    SLIDER_MAX_TABLE[5]=5000;
+SLIDER_MIN_TABLE[6]=0;    SLIDER_MAX_TABLE[6]=250;
+SLIDER_MIN_TABLE[7]=0;    SLIDER_MAX_TABLE[7]=10;
+SLIDER_MIN_TABLE[8]=20;   SLIDER_MAX_TABLE[8]=500;
+
+// Recompute all derived parameter values from the sliders.
+// Called from @slider (host-driven changes) and from @gfx (mouse edits) —
+// writing a slider from @gfx does NOT re-run @slider, so this must be callable.
+function params_update() (
+  mode_id   = slider1;
+  direction = mode_id == MODE_UP ? -1 : 1;  // +1 = downward, -1 = upward
+
+  threshold_db = slider3;
+  ratio        = slider4;
+  range_db     = slider5;
+  knee_db      = slider6;
+  attack_ms    = slider7;
+  release_ms   = slider8;
+  hold_ms      = slider9;
+
+  atk_coeff    = 1 - exp(-log(10) / max(attack_ms  * srate / 1000, 1));
+  rel_coeff    = 1 - exp(-log(10) / max(release_ms * srate / 1000, 1));
+  rms_coeff    = 1 - exp(-1 / (0.005 * srate));
+  vis_rms_coeff = 1 - exp(-1 / (0.150 * srate));  // ~150ms RMS for the visual dot
+  vis_rms_readout_coeff = 1 - exp(-1 / (1.0 * srate));  // ~1s RMS for the stable readout
+  hold_samples = floor(hold_ms * srate / 1000);
+
+  lookahead_samples = min(floor(slider10 * srate / 1000), LA_BUF_SIZE - 1);
+  pdc_delay   = lookahead_samples;
+  pdc_bot_ch  = 0;
+  pdc_top_ch  = 2;
+
+  // Sidechain highpass: 0 = bypassed when at minimum (20 Hz)
+  sc_hp_coeff = slider11 > 20.5 ? (1 - exp(-2 * $pi * slider11 / srate)) : 0;
+);
+
+ui_disp_enabled = 1;
+
+// On-display drag state (Phase 4b)
+ui_drag_param     = -1;  // -1 none, 0 threshold, 1 ratio, 2 range, 3 knee
+ui_hover_param    = -1;
+ui_prev_cap       = 0;
+ui_drag_grab_x    = 0;   // mouse x in input-dB at grab
+ui_drag_grab_y    = 0;   // mouse y in pixels at grab
+ui_drag_start_v   = 0;   // parameter value at grab
+ui_knee_edge_sign = 1;   // +1 = grabbed right knee edge, -1 = left
+
+// Grab handle positions (computed in @gfx each frame; hit-tested next frame)
+h_thr_x = h_thr_y = -1000;
+h_kl_x  = h_kl_y  = -1000;
+h_kr_x  = h_kr_y  = -1000;
+h_rng_x = h_rng_y = -1000;
+h_rat_x = h_rat_y = -1000;
+rs_x1 = rs_y1 = rs_x2 = rs_y2 = -1000;  // active slope segment (ratio hit test)
+
+// Right panel drag state (Phase 4c)
+ui_drag_strip         = -1;  // -1 none, 0-4 = strip index
+ui_drag_strip_start_y = 0;
+ui_drag_strip_start_v = 0;
+
+HIST_IN_BUF    = 2048;
+HIST_OUT_BUF   = 4096;
+HIST_BUF_SIZE  = 2048;
+HIST_DISP_SAMP = 1000;  // ~3s window at 3ms resolution
+
+hist_write_pos  = 0;
+hist_ds_counter = 0;
+hist_ds_rate    = max(1, floor(srate * 0.003));
+
+memset(HIST_IN_BUF,  -200, HIST_BUF_SIZE);
+memset(HIST_OUT_BUF, -200, HIST_BUF_SIZE);
 
 @slider
 mode_id = slider1;
@@ -55,57 +169,54 @@ mode_id != last_mode ? (
   mode_id == MODE_GATE ? (
     slider3 = -40; slider4 = 10; slider5 = 40;
     slider6 = 3;   slider7 = 1;  slider8 = 100;
-    slider9 = 10;  slider10 = 0;
+    slider9 = 10;  slider10 = 0; slider11 = 20;
   ) : mode_id == MODE_DOWN ? (
     slider3 = -50; slider4 = 2;  slider5 = 12;
     slider6 = 9;   slider7 = 10; slider8 = 250;
-    slider9 = 0;   slider10 = 0;
+    slider9 = 0;   slider10 = 0; slider11 = 20;
   ) : (
     slider3 = -20; slider4 = 2;  slider5 = 6;
     slider6 = 6;   slider7 = 5;  slider8 = 200;
-    slider9 = 0;   slider10 = 0;
+    slider9 = 0;   slider10 = 0; slider11 = 20;
   );
   slider_automate(slider3);  slider_automate(slider4);
   slider_automate(slider5);  slider_automate(slider6);
   slider_automate(slider7);  slider_automate(slider8);
   slider_automate(slider9);  slider_automate(slider10);
+  slider_automate(slider11);
 );
 
-// +1 = downward (Gate/Down): process below threshold
-// -1 = upward: process above threshold
-direction = mode_id == MODE_UP ? -1 : 1;
-
-threshold_db = slider3;
-ratio        = slider4;
-range_db     = slider5;
-knee_db      = slider6;
-attack_ms    = slider7;
-release_ms   = slider8;
-hold_ms      = slider9;
-
-atk_coeff    = 1 - exp(-log(10) / max(attack_ms  * srate / 1000, 1));
-rel_coeff    = 1 - exp(-log(10) / max(release_ms * srate / 1000, 1));
-rms_coeff    = 1 - exp(-1 / (0.005 * srate));
-hold_samples = floor(hold_ms * srate / 1000);
-
-lookahead_samples = min(floor(slider10 * srate / 1000), LA_BUF_SIZE - 1);
-pdc_delay   = lookahead_samples;
-pdc_bot_ch  = 0;
-pdc_top_ch  = 2;
+params_update();
 
 @sample
 // Write current (undelayed) input into lookahead buffer
 LA_BUF_L[la_write_pos] = spl0;
 LA_BUF_R[la_write_pos] = spl1;
 
-// --- Peak detection (stereo linked) on undelayed signal ---
-det = max(abs(spl0), abs(spl1));
+// --- Peak detection (stereo linked) with optional sidechain highpass ---
+// HP filter is a first-order highpass on the raw audio before rectification.
+// sc_hp_coeff == 0 means bypassed (slider at 20 Hz minimum).
+sc_hp_coeff > 0 ? (
+  sc_hp_state_l += sc_hp_coeff * (spl0 - sc_hp_state_l);
+  sc_hp_state_r += sc_hp_coeff * (spl1 - sc_hp_state_r);
+  det = max(abs(spl0 - sc_hp_state_l), abs(spl1 - sc_hp_state_r));
+) : (
+  det = max(abs(spl0), abs(spl1));
+);
 
 // Light pre-smoothing (~5ms) to prevent chatter
 env_det += rms_coeff * (det - env_det);
 
+// UI-only slow RMS follower (integrate mean-square; log deferred to @gfx)
+vis_meansq += vis_rms_coeff * (det * det - vis_meansq);
+// UI-only long-window RMS for the readout (settles to a stable average)
+vis_rms_readout_ms += vis_rms_readout_coeff * (det * det - vis_rms_readout_ms);
+
 // Convert to dB
 env_db = env_det > TINY ? LOG2DB * log(env_det) : -200;
+
+// UI-only max peak hold (true maximum over time)
+vis_peak_db = max(vis_peak_db, env_db);
 
 // --- Hold counter ---
 env_db >= threshold_db ? (
@@ -157,3 +268,634 @@ spl0 = LA_BUF_L[read_pos] * gain_smooth;
 spl1 = LA_BUF_R[read_pos] * gain_smooth;
 
 la_write_pos = (la_write_pos + 1) % LA_BUF_SIZE;
+
+hist_ds_counter += 1;
+hist_ds_counter >= hist_ds_rate ? (
+  hist_ds_counter = 0;
+  ui_disp_enabled ? (
+    HIST_IN_BUF[hist_write_pos]  = env_db;
+    HIST_OUT_BUF[hist_write_pos] = env_db + LOG2DB * log(max(gain_smooth, TINY));
+    hist_write_pos = (hist_write_pos + 1) % HIST_BUF_SIZE;
+  );
+);
+
+@gfx
+// Draw a labeled value strip in the right panel.
+// Caller sets #_lbl and #_val before calling.
+function ui_draw_strip(sx, sy, sw, sh)
+(
+  gfx_setfont(2);
+  gfx_r = 0.360; gfx_g = 0.380; gfx_b = 0.440; gfx_a = 1;
+  gfx_measurestr(#_lbl, str_w, str_h);
+  gfx_x = sx + (sw - str_w) * 0.5; gfx_y = sy + 6;
+  gfx_drawstr(#_lbl);
+  gfx_r = 0.820; gfx_g = 0.840; gfx_b = 0.880; gfx_a = 1;
+  gfx_measurestr(#_val, str_w, str_h);
+  gfx_x = sx + (sw - str_w) * 0.5; gfx_y = sy + sh * 0.5;
+  gfx_drawstr(#_val);
+);
+
+function ui_gain_db(in_db)
+local(_act, _tmp, _ag)
+(
+  _act = -direction * (in_db - threshold_db);
+  _act < -(knee_db * 0.5) ? (
+    _ag = 0;
+  ) : knee_db > 0 && _act < knee_db * 0.5 ? (
+    _tmp = _act + knee_db * 0.5;
+    _ag = min((ratio - 1) * _tmp * _tmp / (2 * knee_db), range_db);
+    _ag = -direction * _ag;
+  ) : (
+    _ag = min((ratio - 1) * _act, range_db);
+    _ag = -direction * _ag;
+  );
+  _ag
+);
+
+// Grab handle: filled dot with dark outline. Caller sets fill color; hot = hovered/dragged.
+function ui_draw_handle(hx, hy, hot)
+local(hr)
+(
+  hr = (hot ? 6 : 4.5) * ui_fs;
+  gfx_a = 1;
+  gfx_circle(hx, hy, hr, 1, 1);
+  gfx_r = 0.055; gfx_g = 0.065; gfx_b = 0.085;
+  gfx_circle(hx, hy, hr, 0, 1);
+);
+
+// Scale factors
+ui_sx = gfx_w / 700;
+ui_sy = gfx_h / 420;
+ui_fs = min(ui_sx, ui_sy);
+
+// Define fonts each frame, scaled to the window size
+gfx_setfont(1, "Arial", max(12, floor(18 * ui_fs)));
+gfx_setfont(2, "Arial", max(11, floor(15 * ui_fs)));
+
+disp_x = 5 * ui_sx;
+disp_y = 48 * ui_sy;
+disp_w = 615 * ui_sx;
+disp_h = 312 * ui_sy;
+
+// Right panel (time controls)
+_rp_x  = 623 * ui_sx;
+_rp_y  = 48 * ui_sy;
+_rp_w  = 72 * ui_sx;
+_rp_h  = 314 * ui_sy;
+_rp_sh = _rp_h / 5;
+
+// --- Phase 4b: on-display parameter interaction ---
+// Hit zones: threshold line (drag L/R), knee edges (drag L/R, both edges),
+// range dashed line (drag U/D), curve active slope (drag U/D = ratio).
+// Scroll wheel over the knee band adjusts knee width (works even at knee = 0).
+_mw = mouse_wheel; mouse_wheel = 0;
+_hit_line = 8 * ui_fs;                    // line hit half-width
+_hr2 = 12 * ui_fs; _hr2 *= _hr2;          // handle hit radius, squared
+_m_in_disp = mouse_x >= disp_x && mouse_x <= disp_x + disp_w &&
+             mouse_y >= disp_y && mouse_y <= disp_y + disp_h;
+_m_db_x = -60 + 60 * (mouse_x - disp_x) / disp_w;  // mouse x as input dB (unclamped)
+
+_thr_x  = disp_x + disp_w * max(0, min(1, (threshold_db + 60) / 60));
+_kl_x   = disp_x + disp_w * max(0, min(1, (threshold_db - knee_db * 0.5 + 60) / 60));
+_kr_x   = disp_x + disp_w * max(0, min(1, (threshold_db + knee_db * 0.5 + 60) / 60));
+// Range line y at mouse x (line: out = in -/+ range_db depending on direction)
+_rl_out   = _m_db_x - direction * range_db;
+_rl_valid = _rl_out >= -60 && _rl_out <= 0;
+_rl_y     = disp_y + disp_h * (-max(-60, min(0, _rl_out)) / 60);
+
+// Hover hit test, only when not already dragging. Priority: grab handles
+// (positions stored from last frame — 1-frame lag is imperceptible at UI
+// rate), then the lines themselves, then the active slope segment.
+ui_hover_param = -1;
+ui_drag_param < 0 && _m_in_disp ? (
+  (_dx = mouse_x - h_thr_x; _dy = mouse_y - h_thr_y; _dx*_dx + _dy*_dy < _hr2) ? (
+    ui_hover_param = 0;
+  ) : (_dx = mouse_x - h_kl_x; _dy = mouse_y - h_kl_y; _dx*_dx + _dy*_dy < _hr2) ? (
+    ui_hover_param = 3; ui_knee_edge_sign = -1;
+  ) : (_dx = mouse_x - h_kr_x; _dy = mouse_y - h_kr_y; _dx*_dx + _dy*_dy < _hr2) ? (
+    ui_hover_param = 3; ui_knee_edge_sign = 1;
+  ) : (_dx = mouse_x - h_rng_x; _dy = mouse_y - h_rng_y; _dx*_dx + _dy*_dy < _hr2) ? (
+    ui_hover_param = 2;
+  ) : (_dx = mouse_x - h_rat_x; _dy = mouse_y - h_rat_y; _dx*_dx + _dy*_dy < _hr2) ? (
+    ui_hover_param = 1;
+  ) : abs(mouse_x - _thr_x) < _hit_line ? (
+    ui_hover_param = 0;
+  ) : knee_db > 0.1 && abs(mouse_x - _kl_x) < _hit_line ? (
+    ui_hover_param = 3; ui_knee_edge_sign = -1;
+  ) : knee_db > 0.1 && abs(mouse_x - _kr_x) < _hit_line ? (
+    ui_hover_param = 3; ui_knee_edge_sign = 1;
+  ) : _rl_valid && abs(mouse_y - _rl_y) < _hit_line + 2 ? (
+    ui_hover_param = 2;
+  ) : (
+    // Distance to the active slope segment — robust even when the slope is
+    // near-vertical (high ratio), where a y-proximity test fails.
+    _svx = rs_x2 - rs_x1; _svy = rs_y2 - rs_y1;
+    _sl2 = _svx * _svx + _svy * _svy;
+    _st  = _sl2 > 0 ? max(0, min(1, ((mouse_x - rs_x1) * _svx + (mouse_y - rs_y1) * _svy) / _sl2)) : 0;
+    _sdx = mouse_x - (rs_x1 + _st * _svx);
+    _sdy = mouse_y - (rs_y1 + _st * _svy);
+    _sdx * _sdx + _sdy * _sdy < (10 * ui_fs) * (10 * ui_fs) ? ui_hover_param = 1;
+  );
+);
+
+_lmb   = mouse_cap & 1;
+_fine  = (mouse_cap & 8) ? 0.1 : 1;  // shift = 10x finer
+
+// Grab on LMB press
+_lmb && !(ui_prev_cap & 1) && ui_hover_param >= 0 ? (
+  ui_drag_param   = ui_hover_param;
+  ui_drag_grab_x  = _m_db_x;
+  ui_drag_grab_y  = mouse_y;
+  ui_drag_start_v = ui_drag_param == 0 ? threshold_db
+                  : ui_drag_param == 1 ? ratio
+                  : ui_drag_param == 2 ? range_db
+                  : knee_db;
+);
+
+// Drag (continues even if mouse leaves the display)
+_lmb && ui_drag_param >= 0 ? (
+  ui_drag_param == 0 ? (
+    // Threshold: line tracks mouse x 1:1 in dB
+    slider3 = max(-80, min(0, ui_drag_start_v + _fine * (_m_db_x - ui_drag_grab_x)));
+    slider_automate(slider3);
+  ) : ui_drag_param == 1 ? (
+    // Ratio: drag toward the processed side steepens the curve
+    slider4 = max(1, min(30, ui_drag_start_v
+              + _fine * direction * (mouse_y - ui_drag_grab_y) * 29 / (disp_h * 0.5)));
+    slider_automate(slider4);
+  ) : ui_drag_param == 2 ? (
+    // Range: cap line tracks mouse y 1:1 in dB
+    slider5 = max(0, min(60, ui_drag_start_v
+              + _fine * direction * (mouse_y - ui_drag_grab_y) * 60 / disp_h));
+    slider_automate(slider5);
+  ) : (
+    // Knee: edge tracks mouse x (1 dB of edge motion = 2 dB of knee width)
+    slider6 = max(0, min(24, ui_drag_start_v
+              + _fine * 2 * ui_knee_edge_sign * (_m_db_x - ui_drag_grab_x)));
+    slider_automate(slider6);
+  );
+  params_update();
+);
+!_lmb ? ui_drag_param = -1;
+
+// Scroll wheel over the knee band: adjust knee width (handles knee = 0 case)
+_mw != 0 && _m_in_disp && ui_drag_param < 0 &&
+  abs(mouse_x - _thr_x) < max((_kr_x - _kl_x) * 0.5, 12 * ui_fs) ? (
+  slider6 = max(0, min(24, slider6 + _mw / 120 * ((mouse_cap & 8) ? 0.2 : 1)));
+  slider_automate(slider6);
+  params_update();
+);
+
+// --- Phase 4c: right panel strip interaction ---
+// Strips 0-4 map to slider7-11; SLIDER_MIN/MAX_TABLE indices 4-8.
+_m_in_rp = mouse_x >= _rp_x && mouse_x <= _rp_x + _rp_w &&
+           mouse_y >= _rp_y  && mouse_y <= _rp_y  + _rp_h;
+
+// Grab strip on LMB press (only when not dragging a curve element)
+_lmb && !(ui_prev_cap & 1) && _m_in_rp && ui_drag_param < 0 ? (
+  _strip_i = max(0, min(4, floor((mouse_y - _rp_y) / _rp_sh)));
+  ui_drag_strip         = _strip_i;
+  ui_drag_strip_start_y = mouse_y;
+  ui_drag_strip_start_v = _strip_i == 0 ? slider7
+                        : _strip_i == 1 ? slider8
+                        : _strip_i == 2 ? slider9
+                        : _strip_i == 3 ? slider10
+                        :                 slider11;
+);
+
+// Drag: up = increase, 200 screen-pixels = full range, Shift = 10x finer
+_lmb && ui_drag_strip >= 0 ? (
+  _smin = SLIDER_MIN_TABLE[4 + ui_drag_strip];
+  _smax = SLIDER_MAX_TABLE[4 + ui_drag_strip];
+  _new_v = max(_smin, min(_smax,
+    ui_drag_strip_start_v - (mouse_y - ui_drag_strip_start_y) * _fine
+      * (_smax - _smin) / (200 * ui_sy)));
+  ui_drag_strip == 0 ? (slider7  = _new_v; slider_automate(slider7))
+  : ui_drag_strip == 1 ? (slider8  = _new_v; slider_automate(slider8))
+  : ui_drag_strip == 2 ? (slider9  = _new_v; slider_automate(slider9))
+  : ui_drag_strip == 3 ? (slider10 = _new_v; slider_automate(slider10))
+  :                      (slider11 = _new_v; slider_automate(slider11));
+  params_update();
+);
+!_lmb ? ui_drag_strip = -1;
+
+// Scroll wheel over strip: ±0.5% of range per tick
+_mw != 0 && _m_in_rp && ui_drag_strip < 0 ? (
+  _strip_i = max(0, min(4, floor((mouse_y - _rp_y) / _rp_sh)));
+  _smin = SLIDER_MIN_TABLE[4 + _strip_i];
+  _smax = SLIDER_MAX_TABLE[4 + _strip_i];
+  _nudge = _mw / 120 * 0.005 * (_smax - _smin);
+  _strip_i == 0 ? (slider7  = max(_smin, min(_smax, slider7  + _nudge)); slider_automate(slider7))
+  : _strip_i == 1 ? (slider8  = max(_smin, min(_smax, slider8  + _nudge)); slider_automate(slider8))
+  : _strip_i == 2 ? (slider9  = max(_smin, min(_smax, slider9  + _nudge)); slider_automate(slider9))
+  : _strip_i == 3 ? (slider10 = max(_smin, min(_smax, slider10 + _nudge)); slider_automate(slider10))
+  :                (slider11 = max(_smin, min(_smax, slider11 + _nudge)); slider_automate(slider11));
+  params_update();
+);
+
+// --- Phase 4d: mode button and display toggle clicks ---
+_click = _lmb && !(ui_prev_cap & 1);
+_click ? (
+  mouse_x >= 10*ui_sx && mouse_x < 72*ui_sx && mouse_y >= 8*ui_sy && mouse_y < 32*ui_sy ? (
+    slider1 = 0; slider_automate(slider1); params_update();
+  ) : mouse_x >= 78*ui_sx && mouse_x < 164*ui_sx && mouse_y >= 8*ui_sy && mouse_y < 32*ui_sy ? (
+    slider1 = 1; slider_automate(slider1); params_update();
+  ) : mouse_x >= 170*ui_sx && mouse_x < 242*ui_sx && mouse_y >= 8*ui_sy && mouse_y < 32*ui_sy ? (
+    slider1 = 2; slider_automate(slider1); params_update();
+  ) : mouse_x >= 10*ui_sx && mouse_x < 130*ui_sx && mouse_y >= 370*ui_sy && mouse_y < 400*ui_sy ? (
+    ui_disp_enabled = 1 - ui_disp_enabled;
+  );
+);
+
+// --- Grab handle positions (recomputed after any edit; drawn this frame,
+//     hit-tested next frame) ---
+// Threshold handle: on the curve at the threshold input level
+h_thr_x = disp_x + disp_w * max(0, min(1, (threshold_db + 60) / 60));
+_h_in  = max(-60, min(0, threshold_db));
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+h_thr_y = disp_y + disp_h * (-_h_out / 60);
+
+// Knee handles: at the knee edges, but never closer than 16px to the
+// threshold handle so they stay grabbable when knee = 0
+_k_off = max(knee_db * 0.5 * disp_w / 60, 16 * ui_fs);
+h_kl_x = max(disp_x + 4, min(disp_x + disp_w - 4, h_thr_x - _k_off));
+h_kr_x = max(disp_x + 4, min(disp_x + disp_w - 4, h_thr_x + _k_off));
+_h_in  = -60 + 60 * (h_kl_x - disp_x) / disp_w;
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+h_kl_y = disp_y + disp_h * (-_h_out / 60);
+_h_in  = -60 + 60 * (h_kr_x - disp_x) / disp_w;
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+h_kr_y = disp_y + disp_h * (-_h_out / 60);
+
+// Active slope segment: from the knee edge to where the slope leaves the
+// display (or hits the range cap, whichever comes first). Ratio handle at
+// its midpoint.
+_h_in  = max(-60, min(0, threshold_db - direction * knee_db * 0.5));
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+rs_x1  = disp_x + disp_w * (_h_in + 60) / 60;
+rs_y1  = disp_y + disp_h * (-_h_out / 60);
+direction == 1 ? (
+  // Downward: slope exits at out = -60 (in = ((r-1)*thr - 60)/r) or range cap
+  _h_in = max(((ratio - 1) * threshold_db - 60) / max(ratio, 1),
+              threshold_db - range_db / max(ratio - 1, 0.05));
+) : (
+  // Upward: slope exits at out = 0 (in = (r-1)*thr/r) or range cap
+  _h_in = min((ratio - 1) * threshold_db / max(ratio, 1),
+              threshold_db + range_db / max(ratio - 1, 0.05));
+);
+_h_in  = max(-60, min(0, _h_in));
+_h_out = max(-60, min(0, _h_in + ui_gain_db(_h_in)));
+rs_x2  = disp_x + disp_w * (_h_in + 60) / 60;
+rs_y2  = disp_y + disp_h * (-_h_out / 60);
+h_rat_x = (rs_x1 + rs_x2) * 0.5;
+h_rat_y = (rs_y1 + rs_y2) * 0.5;
+
+// Range handle: midpoint of the dashed range line
+direction == 1 ? (
+  _r1x = disp_x + disp_w * min(1, range_db / 60); _r1y = disp_y + disp_h;
+  _r2x = disp_x + disp_w; _r2y = disp_y + disp_h * min(1, range_db / 60);
+) : (
+  _r1x = disp_x; _r1y = disp_y + disp_h * max(0, (60 - range_db) / 60);
+  _r2x = disp_x + disp_w * max(0, (60 - range_db) / 60); _r2y = disp_y;
+);
+h_rng_x = (_r1x + _r2x) * 0.5;
+h_rng_y = (_r1y + _r2y) * 0.5;
+
+// Active element for highlighting: dragged param wins over hover
+_hl = ui_drag_param >= 0 ? ui_drag_param : ui_hover_param;
+// Cursor: horizontal for threshold/knee; vertical for ratio/range/right-panel strips
+_hl == 0 || _hl == 3 ? gfx_setcursor(32644)
+: (_hl >= 1 && _hl <= 2) || ui_drag_strip >= 0 || _m_in_rp ? gfx_setcursor(32645);
+
+ui_prev_cap = mouse_cap;
+
+// --- Background ---
+gfx_r = 0.102; gfx_g = 0.102; gfx_b = 0.118; gfx_a = 1;
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+// --- Top bar background ---
+gfx_r = 0.133; gfx_g = 0.133; gfx_b = 0.149;
+gfx_rect(0, 0, gfx_w, 40*ui_sy);
+
+// Mode button: Gate
+bx = 10*ui_sx; by = 8*ui_sy; bw = 62*ui_sx; bh = 24*ui_sy;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+slider1 == 0 ? (gfx_r=0.165; gfx_g=0.424; gfx_b=0.722) : (gfx_r=0.157; gfx_g=0.157; gfx_b=0.180);
+gfx_rect(bx, by, bw, bh);
+gfx_setfont(1);
+slider1 == 0 ? (gfx_r=0.847; gfx_g=0.847; gfx_b=0.863) : (gfx_r=0.533; gfx_g=0.533; gfx_b=0.565);
+gfx_measurestr("Gate", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("Gate");
+
+// Mode button: Downward
+bx = 78*ui_sx; bw = 86*ui_sx;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+slider1 == 1 ? (gfx_r=0.165; gfx_g=0.424; gfx_b=0.722) : (gfx_r=0.157; gfx_g=0.157; gfx_b=0.180);
+gfx_rect(bx, by, bw, bh);
+slider1 == 1 ? (gfx_r=0.847; gfx_g=0.847; gfx_b=0.863) : (gfx_r=0.533; gfx_g=0.533; gfx_b=0.565);
+gfx_measurestr("Downward", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("Downward");
+
+// Mode button: Upward
+bx = 170*ui_sx; bw = 72*ui_sx;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+slider1 == 2 ? (gfx_r=0.165; gfx_g=0.424; gfx_b=0.722) : (gfx_r=0.157; gfx_g=0.157; gfx_b=0.180);
+gfx_rect(bx, by, bw, bh);
+slider1 == 2 ? (gfx_r=0.847; gfx_g=0.847; gfx_b=0.863) : (gfx_r=0.533; gfx_g=0.533; gfx_b=0.565);
+gfx_measurestr("Upward", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("Upward");
+
+// Style label
+gfx_r = 0.533; gfx_g = 0.533; gfx_b = 0.565;
+gfx_x = 450*ui_sx; gfx_y = 15*ui_sy;
+gfx_drawstr("Style:");
+
+// Style dropdown box
+bx = 490*ui_sx; by = 8*ui_sy; bw = 125*ui_sx; bh = 24*ui_sy;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+gfx_r = 0.157; gfx_g = 0.157; gfx_b = 0.180;
+gfx_rect(bx, by, bw, bh);
+gfx_r = 0.847; gfx_g = 0.847; gfx_b = 0.863;
+gfx_measurestr("General", str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr("General");
+
+// --- Display area ---
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314; gfx_a = 1;
+gfx_rect(disp_x-1, disp_y-1, disp_w+2, disp_h+2);
+gfx_r = 0.039; gfx_g = 0.047; gfx_b = 0.063;
+gfx_rect(disp_x, disp_y, disp_w, disp_h);
+
+_vis_rms_db = vis_meansq > TINY ? LOG2DB * 0.5 * log(vis_meansq) : -200;
+
+// Phase 6: Scrolling level history (0 dB at top, -60 dB at bottom)
+// Per-pixel peak bucketing: each column takes the peak over the samples it
+// covers, which anti-aliases the downsampling and removes scroll shimmer.
+ui_disp_enabled ? (
+  _disp_w_px = floor(disp_w);
+  _bot_y = disp_y + disp_h;
+  _aspan = _disp_w_px > 1 ? (HIST_DISP_SAMP - 1) / (_disp_w_px - 1) : 0;
+  _half  = _aspan * 0.5;
+  _p = 0;
+  loop(_disp_w_px,
+    _age_c     = (_disp_w_px - 1 - _p) * _aspan;
+    _age_start = max(0, floor(_age_c - _half));
+    _age_end   = min(HIST_DISP_SAMP - 1, floor(_age_c + _half));
+    _in_db = -200; _out_db = -200;
+    _a = _age_start;
+    loop(_age_end - _age_start + 1,
+      _bi = (hist_write_pos + HIST_BUF_SIZE - 1 - _a) % HIST_BUF_SIZE;
+      _iv = HIST_IN_BUF[_bi];  _iv > _in_db  ? _in_db  = _iv;
+      _ov = HIST_OUT_BUF[_bi]; _ov > _out_db ? _out_db = _ov;
+      _a += 1;
+    );
+    _in_db  = max(-60, min(0, _in_db));
+    _out_db = max(-60, min(0, _out_db));
+    _px = disp_x + _p;
+    _in_y  = disp_y + disp_h * (-_in_db  / 60);
+    _out_y = disp_y + disp_h * (-_out_db / 60);
+    // Base: lower of input/output filled dark blue
+    gfx_r=0.071; gfx_g=0.212; gfx_b=0.392; gfx_a=1;
+    gfx_rect(_px, max(_in_y,_out_y), 1, _bot_y - max(_in_y,_out_y));
+    // Gain change band: warm red = reduction, teal = boost
+    _in_y < _out_y ? (
+      gfx_r=0.490; gfx_g=0.200; gfx_b=0.160;
+      gfx_rect(_px, _in_y, 1, _out_y - _in_y);
+    ) : _out_y < _in_y ? (
+      gfx_r=0.160; gfx_g=0.490; gfx_b=0.360;
+      gfx_rect(_px, _out_y, 1, _in_y - _out_y);
+    );
+    _p += 1;
+  );
+);
+
+// dB grid lines (overlaid on scrolling bars)
+gfx_r = 0.180; gfx_g = 0.200; gfx_b = 0.240; gfx_a = 0.8;
+_gdb = -10;
+loop(5,
+  _gy = disp_y + disp_h * (-_gdb / 60);
+  gfx_line(disp_x, _gy, disp_x + disp_w, _gy, 0);
+  _gdb -= 10;
+);
+
+// dB axis labels (left edge of display)
+gfx_setfont(2);
+gfx_r = 0.380; gfx_g = 0.400; gfx_b = 0.450; gfx_a = 1;
+_gdb = -10;
+loop(5,
+  _gy = disp_y + disp_h * (-_gdb / 60);
+  sprintf(#_lbl, "%d", _gdb);
+  gfx_measurestr(#_lbl, str_w, str_h);
+  gfx_x = disp_x + 3; gfx_y = _gy - str_h * 0.5;
+  gfx_drawstr(#_lbl);
+  _gdb -= 10;
+);
+
+// Phase 5: Transfer curve (both axes: 0 dB at top, -60 dB at bottom)
+// Unity reference line (45 degree diagonal)
+gfx_r = 0.180; gfx_g = 0.200; gfx_b = 0.240; gfx_a = 1;
+gfx_line(disp_x, disp_y + disp_h, disp_x + disp_w, disp_y, 1);
+
+// Threshold reference line (vertical) — bright when hovered/dragged
+_thr_x = disp_x + disp_w * max(0, min(1, (threshold_db + 60) / 60));
+_hl == 0 ? (gfx_r = 0.550; gfx_g = 0.650; gfx_b = 0.780;)
+         : (gfx_r = 0.220; gfx_g = 0.250; gfx_b = 0.300;);
+gfx_line(_thr_x, disp_y, _thr_x, disp_y + disp_h, 1);
+
+// Knee edge lines (vertical, at threshold ± knee/2) — bright when hovered/dragged
+knee_db > 0.1 ? (
+  _kl_x = disp_x + disp_w * max(0, min(1, (threshold_db - knee_db * 0.5 + 60) / 60));
+  _kr_x = disp_x + disp_w * max(0, min(1, (threshold_db + knee_db * 0.5 + 60) / 60));
+  _hl == 3 ? (gfx_r = 0.450; gfx_g = 0.550; gfx_b = 0.680; gfx_a = 1;)
+           : (gfx_r = 0.150; gfx_g = 0.180; gfx_b = 0.230; gfx_a = 1;);
+  gfx_line(_kl_x, disp_y, _kl_x, disp_y + disp_h, 1);
+  gfx_line(_kr_x, disp_y, _kr_x, disp_y + disp_h, 1);
+);
+
+// Range reference line (dashed, parallel to unity, displaced by range_db)
+// Downward: output = input - range_db  |  Upward: output = input + range_db
+_hl == 2 ? (gfx_r = 0.550; gfx_g = 0.380; gfx_b = 0.720; gfx_a = 1;)
+         : (gfx_r = 0.300; gfx_g = 0.200; gfx_b = 0.400; gfx_a = 1;);
+direction == 1 ? (
+  _rng_x1 = disp_x + disp_w * min(1, range_db / 60);
+  _rng_y1 = disp_y + disp_h;
+  _rng_x2 = disp_x + disp_w;
+  _rng_y2 = disp_y + disp_h * min(1, range_db / 60);
+) : (
+  _rng_x1 = disp_x;
+  _rng_y1 = disp_y + disp_h * max(0, (60 - range_db) / 60);
+  _rng_x2 = disp_x + disp_w * max(0, (60 - range_db) / 60);
+  _rng_y2 = disp_y;
+);
+_rdx = _rng_x2 - _rng_x1; _rdy = _rng_y2 - _rng_y1;
+_rlen = sqrt(_rdx * _rdx + _rdy * _rdy);
+_rlen > 0 ? (
+  _rnx = _rdx / _rlen; _rny = _rdy / _rlen;
+  _rt = 0;
+  loop(floor(_rlen / 10) + 1,
+    _rt1x = _rng_x1 + _rt * _rnx; _rt1y = _rng_y1 + _rt * _rny;
+    _rt2 = min(_rt + 6, _rlen);
+    gfx_line(_rt1x, _rt1y, _rng_x1 + _rt2 * _rnx, _rng_y1 + _rt2 * _rny, 1);
+    _rt += 10;
+  );
+);
+
+// Curve polyline: 100 steps from -60 to 0 dB — bright when ratio hovered/dragged
+_hl == 1 ? (gfx_r = 0.580; gfx_g = 0.820; gfx_b = 1.000; gfx_a = 1;)
+         : (gfx_r = 0.400; gfx_g = 0.700; gfx_b = 0.950; gfx_a = 1;);
+_in_db_c = -60;
+_out_db_c = max(-60, min(0, _in_db_c + ui_gain_db(_in_db_c)));
+gfx_x = disp_x;
+gfx_y = disp_y + disp_h * (-_out_db_c / 60);
+loop(99,
+  _in_db_c += 60 / 99;
+  _out_db_c = max(-60, min(0, _in_db_c + ui_gain_db(_in_db_c)));
+  _cx = disp_x + disp_w * (_in_db_c + 60) / 60;
+  _cy = disp_y + disp_h * (-_out_db_c / 60);
+  gfx_lineto(_cx, _cy, 1);
+);
+
+// Live input dot on curve — slow RMS level (pre-computed above)
+_dot_in  = max(-60, min(0, _vis_rms_db));
+_dot_out = max(-60, min(0, _dot_in + ui_gain_db(_dot_in)));
+_dot_x = disp_x + disp_w * (_dot_in  + 60) / 60;
+_dot_y = disp_y + disp_h * (-_dot_out / 60);
+gfx_r = 1.0; gfx_g = 1.0; gfx_b = 1.0; gfx_a = 1;
+gfx_circle(_dot_x, _dot_y, 4, 1, 1);
+gfx_r = 0.100; gfx_g = 0.120; gfx_b = 0.160;
+gfx_circle(_dot_x, _dot_y, 4, 0, 1);
+
+// Grab handles (color-matched to their element, brighter when hovered/dragged)
+_hl == 3 ? (gfx_r = 0.700; gfx_g = 0.800; gfx_b = 0.920;)
+         : (gfx_r = 0.310; gfx_g = 0.390; gfx_b = 0.500;);
+ui_draw_handle(h_kl_x, h_kl_y, _hl == 3);
+ui_draw_handle(h_kr_x, h_kr_y, _hl == 3);
+_hl == 2 ? (gfx_r = 0.760; gfx_g = 0.560; gfx_b = 0.940;)
+         : (gfx_r = 0.470; gfx_g = 0.330; gfx_b = 0.620;);
+ui_draw_handle(h_rng_x, h_rng_y, _hl == 2);
+_hl == 1 ? (gfx_r = 0.640; gfx_g = 0.870; gfx_b = 1.000;)
+         : (gfx_r = 0.330; gfx_g = 0.580; gfx_b = 0.810;);
+ui_draw_handle(h_rat_x, h_rat_y, _hl == 1);
+_hl == 0 ? (gfx_r = 0.800; gfx_g = 0.880; gfx_b = 0.970;)
+         : (gfx_r = 0.450; gfx_g = 0.540; gfx_b = 0.660;);
+ui_draw_handle(h_thr_x, h_thr_y, _hl == 0);
+
+// PK and RMS readouts (top-right of display)
+gfx_setfont(2);
+gfx_r = 0.580; gfx_g = 0.630; gfx_b = 0.710; gfx_a = 1;
+vis_peak_db > -190 ? (
+  sprintf(#_pkstr, "PK %.1f", max(-60.0, vis_peak_db));
+) : (
+  sprintf(#_pkstr, "PK ---");
+);
+gfx_measurestr(#_pkstr, str_w, str_h);
+gfx_x = disp_x + disp_w - str_w - 4; gfx_y = disp_y + 4;
+gfx_drawstr(#_pkstr);
+
+_vis_rms_rd_db = vis_rms_readout_ms > TINY ? LOG2DB * 0.5 * log(vis_rms_readout_ms) : -200;
+_vis_rms_rd_db > -190 ? (
+  sprintf(#_rmsstr, "RMS %.1f", max(-60.0, _vis_rms_rd_db));
+) : (
+  sprintf(#_rmsstr, "RMS ---");
+);
+gfx_measurestr(#_rmsstr, str_w, str_h);
+gfx_x = disp_x + disp_w - str_w - 4; gfx_y = disp_y + 4 + str_h + 2;
+gfx_drawstr(#_rmsstr);
+
+// Hovered/dragged parameter readout (top-left of display)
+_hl >= 0 ? (
+  _hl == 0 ? sprintf(#_pstr, "THRESHOLD  %.1f dB", threshold_db)
+  : _hl == 1 ? sprintf(#_pstr, "RATIO  %.1f : 1", ratio)
+  : _hl == 2 ? sprintf(#_pstr, "RANGE  %.1f dB", range_db)
+  : sprintf(#_pstr, "KNEE  %.1f dB", knee_db);
+  gfx_setfont(2);
+  gfx_r = 0.850; gfx_g = 0.880; gfx_b = 0.930; gfx_a = 1;
+  gfx_x = disp_x + 6; gfx_y = disp_y + 4;
+  gfx_drawstr(#_pstr);
+);
+
+// --- Right panel: time controls ---
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314; gfx_a = 1;
+gfx_rect(_rp_x-1, _rp_y-1, _rp_w+2, _rp_h+2);
+gfx_r = 0.110; gfx_g = 0.112; gfx_b = 0.128;
+gfx_rect(_rp_x, _rp_y, _rp_w, _rp_h);
+
+// Strip 0: Attack
+strcpy(#_lbl, "ATTACK");
+slider7 < 10 ? sprintf(#_val, "%.2f ms", slider7) : sprintf(#_val, "%.1f ms", slider7);
+ui_draw_strip(_rp_x, _rp_y, _rp_w, _rp_sh);
+gfx_r=0.200; gfx_g=0.210; gfx_b=0.240;
+gfx_line(_rp_x, _rp_y+_rp_sh, _rp_x+_rp_w, _rp_y+_rp_sh, 0);
+
+// Strip 1: Release
+strcpy(#_lbl, "RELEASE");
+slider8 < 100 ? sprintf(#_val, "%.1f ms", slider8) : sprintf(#_val, "%.0f ms", slider8);
+ui_draw_strip(_rp_x, _rp_y+_rp_sh, _rp_w, _rp_sh);
+gfx_r=0.200; gfx_g=0.210; gfx_b=0.240;
+gfx_line(_rp_x, _rp_y+2*_rp_sh, _rp_x+_rp_w, _rp_y+2*_rp_sh, 0);
+
+// Strip 2: Hold
+strcpy(#_lbl, "HOLD");
+slider9 < 0.5 ? strcpy(#_val, "off") : sprintf(#_val, "%.0f ms", slider9);
+ui_draw_strip(_rp_x, _rp_y+2*_rp_sh, _rp_w, _rp_sh);
+gfx_r=0.200; gfx_g=0.210; gfx_b=0.240;
+gfx_line(_rp_x, _rp_y+3*_rp_sh, _rp_x+_rp_w, _rp_y+3*_rp_sh, 0);
+
+// Strip 3: Lookahead
+strcpy(#_lbl, "LOOK");
+slider10 < 0.05 ? strcpy(#_val, "off") : sprintf(#_val, "%.1f ms", slider10);
+ui_draw_strip(_rp_x, _rp_y+3*_rp_sh, _rp_w, _rp_sh);
+gfx_r=0.200; gfx_g=0.210; gfx_b=0.240;
+gfx_line(_rp_x, _rp_y+4*_rp_sh, _rp_x+_rp_w, _rp_y+4*_rp_sh, 0);
+
+// Strip 4: SC HP
+strcpy(#_lbl, "SC HP");
+slider11 > 20.5 ? sprintf(#_val, "%.0f Hz", slider11) : strcpy(#_val, "off");
+ui_draw_strip(_rp_x, _rp_y+4*_rp_sh, _rp_w, _rp_sh);
+
+// --- Bottom bar ---
+// Display toggle button
+bx = 10*ui_sx; by = 370*ui_sy; bw = 120*ui_sx; bh = 30*ui_sy;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+ui_disp_enabled ? (gfx_r=0.165; gfx_g=0.424; gfx_b=0.722) : (gfx_r=0.157; gfx_g=0.157; gfx_b=0.180);
+gfx_rect(bx, by, bw, bh);
+ui_disp_enabled ? (
+  gfx_r=0.847; gfx_g=0.847; gfx_b=0.863;
+  gfx_measurestr("Display ON", str_w, str_h);
+  gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+  gfx_drawstr("Display ON");
+) : (
+  gfx_r=0.533; gfx_g=0.533; gfx_b=0.565;
+  gfx_measurestr("Display OFF", str_w, str_h);
+  gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+  gfx_drawstr("Display OFF");
+);
+
+// GR readout
+bx = 545*ui_sx; bw = 145*ui_sx;
+gfx_r = 0.267; gfx_g = 0.267; gfx_b = 0.314;
+gfx_rect(bx-1, by-1, bw+2, bh+2);
+gfx_r = 0.157; gfx_g = 0.157; gfx_b = 0.180;
+gfx_rect(bx, by, bw, bh);
+_gr_db = LOG2DB * log(max(gain_smooth, TINY));
+_gr_db < -0.05 ? (
+  gfx_r = 0.800; gfx_g = 0.500; gfx_b = 0.350;
+  sprintf(#_grstr, "GR %.1f dB", _gr_db);
+) : _gr_db > 0.05 ? (
+  gfx_r = 0.350; gfx_g = 0.750; gfx_b = 0.550;
+  sprintf(#_grstr, "GR +%.1f dB", _gr_db);
+) : (
+  gfx_r = 0.533; gfx_g = 0.533; gfx_b = 0.565;
+  sprintf(#_grstr, "GR 0.0 dB");
+);
+gfx_measurestr(#_grstr, str_w, str_h);
+gfx_x = bx + (bw-str_w)*0.5; gfx_y = by + (bh-str_h)*0.5;
+gfx_drawstr(#_grstr);
