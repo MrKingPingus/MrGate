@@ -143,6 +143,11 @@ h_rng_x = h_rng_y = -1000;
 h_rat_x = h_rat_y = -1000;
 rs_x1 = rs_y1 = rs_x2 = rs_y2 = -1000;  // active slope segment (ratio hit test)
 
+// Right panel drag state (Phase 4c)
+ui_drag_strip         = -1;  // -1 none, 0-4 = strip index
+ui_drag_strip_start_y = 0;
+ui_drag_strip_start_v = 0;
+
 HIST_IN_BUF    = 2048;
 HIST_OUT_BUF   = 4096;
 HIST_BUF_SIZE  = 2048;
@@ -441,6 +446,67 @@ _mw != 0 && _m_in_disp && ui_drag_param < 0 &&
   params_update();
 );
 
+// --- Phase 4c: right panel strip interaction ---
+// Strips 0-4 map to slider7-11; SLIDER_MIN/MAX_TABLE indices 4-8.
+_m_in_rp = mouse_x >= _rp_x && mouse_x <= _rp_x + _rp_w &&
+           mouse_y >= _rp_y  && mouse_y <= _rp_y  + _rp_h;
+
+// Grab strip on LMB press (only when not dragging a curve element)
+_lmb && !(ui_prev_cap & 1) && _m_in_rp && ui_drag_param < 0 ? (
+  _strip_i = max(0, min(4, floor((mouse_y - _rp_y) / _rp_sh)));
+  ui_drag_strip         = _strip_i;
+  ui_drag_strip_start_y = mouse_y;
+  ui_drag_strip_start_v = _strip_i == 0 ? slider7
+                        : _strip_i == 1 ? slider8
+                        : _strip_i == 2 ? slider9
+                        : _strip_i == 3 ? slider10
+                        :                 slider11;
+);
+
+// Drag: up = increase, 200 screen-pixels = full range, Shift = 10x finer
+_lmb && ui_drag_strip >= 0 ? (
+  _smin = SLIDER_MIN_TABLE[4 + ui_drag_strip];
+  _smax = SLIDER_MAX_TABLE[4 + ui_drag_strip];
+  _new_v = max(_smin, min(_smax,
+    ui_drag_strip_start_v - (mouse_y - ui_drag_strip_start_y) * _fine
+      * (_smax - _smin) / (200 * ui_sy)));
+  ui_drag_strip == 0 ? (slider7  = _new_v; slider_automate(slider7))
+  : ui_drag_strip == 1 ? (slider8  = _new_v; slider_automate(slider8))
+  : ui_drag_strip == 2 ? (slider9  = _new_v; slider_automate(slider9))
+  : ui_drag_strip == 3 ? (slider10 = _new_v; slider_automate(slider10))
+  :                      (slider11 = _new_v; slider_automate(slider11));
+  params_update();
+);
+!_lmb ? ui_drag_strip = -1;
+
+// Scroll wheel over strip: ±0.5% of range per tick
+_mw != 0 && _m_in_rp && ui_drag_strip < 0 ? (
+  _strip_i = max(0, min(4, floor((mouse_y - _rp_y) / _rp_sh)));
+  _smin = SLIDER_MIN_TABLE[4 + _strip_i];
+  _smax = SLIDER_MAX_TABLE[4 + _strip_i];
+  _nudge = _mw / 120 * 0.005 * (_smax - _smin);
+  _strip_i == 0 ? (slider7  = max(_smin, min(_smax, slider7  + _nudge)); slider_automate(slider7))
+  : _strip_i == 1 ? (slider8  = max(_smin, min(_smax, slider8  + _nudge)); slider_automate(slider8))
+  : _strip_i == 2 ? (slider9  = max(_smin, min(_smax, slider9  + _nudge)); slider_automate(slider9))
+  : _strip_i == 3 ? (slider10 = max(_smin, min(_smax, slider10 + _nudge)); slider_automate(slider10))
+  :                (slider11 = max(_smin, min(_smax, slider11 + _nudge)); slider_automate(slider11));
+  params_update();
+);
+
+// --- Phase 4d: mode button and display toggle clicks ---
+_click = _lmb && !(ui_prev_cap & 1);
+_click ? (
+  mouse_x >= 10*ui_sx && mouse_x < 72*ui_sx && mouse_y >= 8*ui_sy && mouse_y < 32*ui_sy ? (
+    slider1 = 0; slider_automate(slider1); params_update();
+  ) : mouse_x >= 78*ui_sx && mouse_x < 164*ui_sx && mouse_y >= 8*ui_sy && mouse_y < 32*ui_sy ? (
+    slider1 = 1; slider_automate(slider1); params_update();
+  ) : mouse_x >= 170*ui_sx && mouse_x < 242*ui_sx && mouse_y >= 8*ui_sy && mouse_y < 32*ui_sy ? (
+    slider1 = 2; slider_automate(slider1); params_update();
+  ) : mouse_x >= 10*ui_sx && mouse_x < 130*ui_sx && mouse_y >= 370*ui_sy && mouse_y < 400*ui_sy ? (
+    ui_disp_enabled = 1 - ui_disp_enabled;
+  );
+);
+
 // --- Grab handle positions (recomputed after any edit; drawn this frame,
 //     hit-tested next frame) ---
 // Threshold handle: on the curve at the threshold input level
@@ -497,9 +563,9 @@ h_rng_y = (_r1y + _r2y) * 0.5;
 
 // Active element for highlighting: dragged param wins over hover
 _hl = ui_drag_param >= 0 ? ui_drag_param : ui_hover_param;
-// Resize cursor: horizontal for threshold/knee, vertical for ratio/range
+// Cursor: horizontal for threshold/knee; vertical for ratio/range/right-panel strips
 _hl == 0 || _hl == 3 ? gfx_setcursor(32644)
-: _hl == 1 || _hl == 2 ? gfx_setcursor(32645);
+: (_hl >= 1 && _hl <= 2) || ui_drag_strip >= 0 || _m_in_rp ? gfx_setcursor(32645);
 
 ui_prev_cap = mouse_cap;
 
